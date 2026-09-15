@@ -211,13 +211,16 @@ Each turn is:
 | `status` | `queued`, `running`, `completed`, `failed` or `cancelled` |
 | `input` | The text the turn was admitted with |
 | `messages` | The turn's messages, the same objects as in `messages` |
-| `toolCalls` | `{ callId, tool, title, input?, output?, status }` in the order the calls started; `status` is `running`, `completed` or `failed` |
-| `result` | The output of the agent's result tool, when it reported one; a later call replaces it |
+| `toolCalls` | `{ callId, tool, title, input?, output?, status }` in the order the calls started; `input` and `output` are JSON values; `status` is `running`, `completed`, `failed` or `cancelled` |
+| `result` | The decoded output of the agent's result tool, the same JSON value the session's `result.data` holds, when it reported one; a later call replaces it. An ordinary tool's output never becomes `result` |
 | `failure` | `{ code, message }` from `turn.failed` |
 
 Tool calls are keyed on the runtime's `callId`, so a `tool.completed` updates
-the entry its `tool.started` created rather than adding one. An activity
-timeline renders `turns` directly:
+the entry its `tool.started` created rather than adding one. When a turn ends,
+every call still `running` is settled with the turn: `completed` when the turn
+completed, `failed` when it failed, `cancelled` when it was interrupted. A
+settled turn therefore never shows a running call. An activity timeline
+renders `turns` directly:
 
 ```tsx
 {turns.map((turn) => (

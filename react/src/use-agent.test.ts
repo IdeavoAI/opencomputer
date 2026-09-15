@@ -665,6 +665,13 @@ test("attach exposes turns with their tool activity and result, the same after a
   await again.render();
   const fresh = await again.until((result) => !result.isReplaying && result.turns.length === 2, "second replay");
   assert.deepEqual(fresh.turns, live.turns);
+
+  // An interrupt settles the running call with the turn: the hook shows no
+  // running call on a cancelled turn, and stops counting the turn as running.
+  session.append({ turnId: "turn-1", type: "turn.cancelled", data: { reason: "interrupted", operationsSettled: 1 } });
+  const settled = await view.until((result) => result.turns[1]?.status === "cancelled", "cancelled turn");
+  assert.deepEqual(settled.turns[1]?.toolCalls, [{ callId: "c3", tool: "shell", title: "npm test", status: "cancelled" }]);
+  assert.equal(settled.isRunning, false);
   await again.unmount();
   await view.unmount();
 });

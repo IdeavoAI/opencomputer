@@ -48,14 +48,24 @@ export type TurnStatus =
   | "failed"
   | "cancelled";
 
-export type ToolCallStatus = "running" | "completed" | "failed";
+/**
+ * `running` until the call's own `tool.completed` or `tool.failed`, or until
+ * its turn ends: a terminal turn event settles every call still running with
+ * the turn's outcome, so a settled turn never shows a running call.
+ */
+export type ToolCallStatus = "running" | "completed" | "failed" | "cancelled";
 
-/** One tool call of a turn, keyed on the runtime's `callId`. */
+/**
+ * One tool call of a turn, keyed on `callId`, reduced from the documented
+ * `tool.*` event fields: `tool`, `callId`, `title`, `input` and `output` as
+ * JSON values.
+ */
 export interface ToolCall {
   callId: string;
   tool: string;
   title: string;
   input?: DataValue;
+  /** The tool's output as the log carries it: a JSON value, never JSON text. */
   output?: DataValue;
   status: ToolCallStatus;
 }
@@ -76,7 +86,11 @@ export interface Turn {
   messages: AgentMessage[];
   /** Tool calls in the order they started. */
   toolCalls: ToolCall[];
-  /** The output of the result tool's call, from `tool.completed` with `data.result`. */
+  /**
+   * The decoded output of the result tool's latest committed call, from
+   * `tool.completed` with `data.result: true`; the same value the session's
+   * `result.data` holds. An ordinary tool's output never lands here.
+   */
   result?: DataValue;
   failure?: TurnFailure;
 }
@@ -191,6 +205,18 @@ function toolCallId(event: AgentEvent): string {
 }
 
 /**
+ * Settles every call still running when its turn ends. The log records a
+ * completion per call while the runtime is connected; a call that never got
+ * one ended with the turn, and the turn's outcome is the only honest word on
+ * it: completed with the turn, failed with it, or stopped by the interrupt.
+ */
+function settleToolCalls(calls: ToolCall[], status: Exclude<ToolCallStatus, "running">): ToolCall[] {
+  return calls.some((call) => call.status === "running")
+    ? calls.map((call) => (call.status === "running" ? { ...call, status } : call))
+    : calls;
+}
+
+/**
  * Applies one event to the turn records: the turn it names is created on
  * first sight and moved along its lifecycle; tool events attach to it. Pure,
  * and shared by attach mode (through `applyEvent`) and create mode.
@@ -221,17 +247,18 @@ export function applyTurnEvent(
       next = { ...current, status: "running" };
       break;
     case "turn.completed":
-      next = { ...current, status: "completed" };
+      next = { ...current, status: "completed", toolCalls: settleToolCalls(current.toolCalls, "completed") };
       break;
     case "turn.failed":
       next = {
         ...current,
         status: "failed",
+        toolCalls: settleToolCalls(current.toolCalls, "failed"),
         failure: { code: text(fields.code) || "agent_failed", message: text(fields.message) },
       };
       break;
     case "turn.cancelled":
-      next = { ...current, status: "cancelled" };
+      next = { ...current, status: "cancelled", toolCalls: settleToolCalls(current.toolCalls, "cancelled") };
       break;
     case "tool.started": {
       const tool = text(fields.tool);

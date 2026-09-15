@@ -200,3 +200,67 @@ test("a tool event without a callId still gets a stable id from its position", (
   assert.equal(turns[0]?.input, "");
   assert.deepEqual(turns[0]?.toolCalls, [{ callId: "event:2", tool: "shell", title: "shell", status: "running" }]);
 });
+
+// The review's case in the documented shape: the result tool committed an
+// object, a later shell call started and never reported a completion of its
+// own, and the turn completed. The turn's word is final: the row is settled
+// with the turn, the result is the decoded object, and an ordinary output
+// that looks like a result is not one.
+const unsettled: AgentEvent[] = [
+  { seq: 1, turnId: "t1", type: "message.received", data: { input: "Fix the login page", mode: "queue" } },
+  { seq: 2, turnId: "t1", type: "turn.started", data: {} },
+  { seq: 3, turnId: "t1", type: "tool.started", data: { tool: "shell", callId: "c1", title: "git status", input: { command: "git status" } } },
+  { seq: 4, turnId: "t1", type: "tool.completed", data: { tool: "shell", callId: "c1", title: "git status", output: { branch: "task/1", pr: { number: 7, url: "https://example.test/pr/7" } } } },
+  { seq: 5, turnId: "t1", type: "tool.started", data: { tool: "report", callId: "c2", title: "report", input: { branch: "task/1" } } },
+  { seq: 6, turnId: "t1", type: "tool.completed", data: { tool: "report", callId: "c2", title: "report", output: { branch: "task/1", pr: { number: 7, url: "https://example.test/pr/7" } }, result: true } },
+  { seq: 7, turnId: "t1", type: "tool.started", data: { tool: "shell", callId: "c3", title: "npm test", input: { command: "npm test" } } },
+  { seq: 8, turnId: "t1", type: "message.completed", data: { text: "Opened PR 7." } },
+  { seq: 9, turnId: "t1", type: "turn.completed", data: {} },
+];
+
+test("a terminal turn event settles every tool row without a completion, and the result is the decoded value", () => {
+  const timeline = applyEvents(emptyTimeline(), unsettled.slice(0, 7));
+  assert.deepEqual(timeline.turns.t1?.toolCalls.map((call) => [call.callId, call.status]), [
+    ["c1", "completed"],
+    ["c2", "completed"],
+    ["c3", "running"],
+  ]);
+  // The ordinary shell output equals the result object byte for byte and is
+  // still not the result: only `result: true` commits one.
+  const beforeReport = turnsOf(applyEvents(emptyTimeline(), unsettled.slice(0, 4)))[0];
+  assert.equal(beforeReport?.result, undefined);
+  assert.deepEqual(beforeReport?.toolCalls[0]?.output, { branch: "task/1", pr: { number: 7, url: "https://example.test/pr/7" } });
+
+  const [turn] = turnsOf(applyEvents(emptyTimeline(), unsettled)) as [Turn];
+  assert.equal(turn.status, "completed");
+  assert.deepEqual(turn.toolCalls.map((call) => [call.callId, call.status]), [
+    ["c1", "completed"],
+    ["c2", "completed"],
+    ["c3", "completed"],
+  ]);
+  assert.equal(typeof turn.result, "object");
+  assert.deepEqual(turn.result, { branch: "task/1", pr: { number: 7, url: "https://example.test/pr/7" } });
+  assert.deepEqual(turn.toolCalls[1]?.output, turn.result);
+
+  const failed = turnsOf(applyEvents(emptyTimeline(), [
+    ...unsettled.slice(0, 7),
+    { seq: 8, turnId: "t1", type: "turn.failed", data: { code: "runtime_lost", message: "The runtime was lost" } },
+  ]))[0];
+  assert.deepEqual(failed?.toolCalls.map((call) => [call.callId, call.status]), [
+    ["c1", "completed"],
+    ["c2", "completed"],
+    ["c3", "failed"],
+  ]);
+  assert.deepEqual(failed?.result, turn.result);
+
+  const cancelled = turnsOf(applyEvents(emptyTimeline(), [
+    ...unsettled.slice(0, 7),
+    { seq: 8, turnId: "t1", type: "turn.cancelled", data: { reason: "interrupted", operationsSettled: 1 } },
+  ]))[0];
+  assert.deepEqual(cancelled?.toolCalls.map((call) => [call.callId, call.status]), [
+    ["c1", "completed"],
+    ["c2", "completed"],
+    ["c3", "cancelled"],
+  ]);
+  assert.deepEqual(cancelled?.result, turn.result);
+});
