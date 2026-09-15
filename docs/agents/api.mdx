@@ -221,8 +221,10 @@ curl -X POST 'https://app.opencomputer.dev/api/managed-agents/sessions/<session-
 
 The response is `202 { turnId, status, duplicate }` for a new turn and
 `200` with `duplicate: true` when the key had already created one. `status`
-is `queued` or `running`. Follow the turn in the event log; the response
-does not wait for it.
+is the turn's status: `queued` or `running` for a new turn, and for a
+repeated key whatever the existing turn has reached, `completed`, `failed`
+or `cancelled` once it has settled. Follow the turn in the event log; the
+response does not wait for it.
 
 The key identifies the request, not only the call. A repeat with the same
 `input`, `payload` and `mode` is the existing turn: key order inside the

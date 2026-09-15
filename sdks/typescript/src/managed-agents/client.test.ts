@@ -268,12 +268,24 @@ describe("OpenComputer client", () => {
     expect(await client.sessions.get("extra")).toEqual({ ...session, nextThing: { added: true } });
   });
 
-  it("accepts every persisted turn status on an admission receipt", async () => {
+  // The API answers a repeated key with the turn's persisted status. A
+  // retry of a turn that has since completed, failed or been cancelled must
+  // say so; a receipt that read "queued" for a completed turn was the
+  // review's reproduction.
+  it("keeps the persisted status on a duplicate admission receipt: completed, failed and cancelled included", async () => {
+    let status = "completed";
     const api = fakeApi({
-      "POST /api/managed-agents/sessions/ses_1/turns": () => Response.json({ turnId: "turn_1", status: "completed", duplicate: true }),
+      "POST /api/managed-agents/sessions/ses_1/turns": () => Response.json({ turnId: "turn_1", status, duplicate: true }),
     });
-    const receipt = await oc(api).sessions.turns.send("ses_1", { input: "again", idempotencyKey: "task_1/start" });
-    expect(receipt).toMatchObject({ turnId: "turn_1", duplicate: true });
+    const client = oc(api);
+    for (status of ["completed", "failed", "cancelled", "running", "queued"]) {
+      expect(await client.sessions.turns.send("ses_1", { input: "again", idempotencyKey: "task_1/start" })).toEqual({
+        turnId: "turn_1", status, duplicate: true,
+      });
+    }
+    // A status the API adds later reaches the caller as itself.
+    status = "stopping";
+    expect((await client.sessions.turns.send("ses_1", { input: "again" })).status).toBe("stopping");
   });
 
   it("honours a custom base URL and requires a key", () => {

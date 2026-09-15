@@ -33,6 +33,7 @@ interface Call {
 function fakeSession(sessionId: string) {
   const log: AgentEvent[] = [];
   const calls: Call[] = [];
+  const admitted = new Map<string, string>();
   let failNext = 0;
   let turns = 0;
   // While set, turn admissions are recorded in the log at once but their
@@ -65,8 +66,20 @@ function fakeSession(sessionId: string) {
       });
     }
     if (call.method === "POST" && url.pathname === `${prefix}/turns`) {
+      // A repeated key returns the existing turn with its persisted status,
+      // as the API does: the log's last word on the turn, `duplicate: true`.
+      const key = typeof call.body?.idempotencyKey === "string" ? call.body.idempotencyKey : undefined;
+      const known = key === undefined ? undefined : admitted.get(key);
+      if (known) {
+        const last = [...log].reverse().find(
+          (event) => event.turnId === known && event.type.startsWith("turn."),
+        );
+        const status = last ? last.type.slice("turn.".length) : "queued";
+        return Response.json({ turnId: known, status, duplicate: true }, { status: 200 });
+      }
       turns += 1;
       const turnId = `turn-${String(turns)}`;
+      if (key !== undefined) admitted.set(key, turnId);
       append({
         turnId,
         type: "message.received",
@@ -272,7 +285,7 @@ test("attach sends turns and interrupts through the app's routes without duplica
   await act(async () => {
     receipt = await view.result().send("  Book the venue  ");
   });
-  assert.deepEqual(receipt, { sessionId: "ses-3", turnId: "turn-1", status: "queued" });
+  assert.deepEqual(receipt, { sessionId: "ses-3", turnId: "turn-1", status: "queued", duplicate: false });
   const sent = view.result();
   assert.equal(sent.isRunning, true);
   assert.deepEqual(sent.messages, [
@@ -387,7 +400,7 @@ test("a send admitted by one session never lands in the session attached later",
   // A's response lands now: A's caller gets A's receipt, B is untouched.
   release();
   const receipt = await sent!;
-  assert.deepEqual(receipt, { sessionId: "ses-a", turnId: "turn-1", status: "queued" });
+  assert.deepEqual(receipt, { sessionId: "ses-a", turnId: "turn-1", status: "queued", duplicate: false });
   await tick();
   await tick();
   assert.equal(latest!.sessionId, "ses-b");
@@ -570,7 +583,7 @@ test("create mode still creates the session on the first send and streams the re
   await act(async () => {
     receipt = await view.result().send("Hi");
   });
-  assert.deepEqual(receipt, { sessionId: "ses-new", turnId: "t1", status: "queued" });
+  assert.deepEqual(receipt, { sessionId: "ses-new", turnId: "t1", status: "queued", duplicate: false });
   const result = view.result();
   assert.equal(result.sessionId, "ses-new");
   assert.equal(result.isRunning, false);
@@ -620,6 +633,33 @@ test("send carries a caller-retained key and a payload, and generates a key when
   assert.equal(typeof turns[1]?.body?.idempotencyKey, "string");
   assert.notEqual(turns[1]?.body?.idempotencyKey, "task_1/1");
   assert.equal("payload" in (turns[1]?.body ?? {}), false);
+  await view.unmount();
+});
+
+// The review's receipt case: a retry of a turn that has since completed
+// reported `queued`, because every status except `running` was mapped to
+// it. The receipt keeps what the platform persisted, and a settled duplicate
+// never counts as a pending admission.
+test("a retried send returns the turn's persisted status, settled ones included, and does not reopen it", async (t) => {
+  const session = fakeSession("ses-receipts");
+  const view = mount(t, { sessionId: "ses-receipts", basePath: "/app/agent", fetch: session.fetch, pollIntervalMs: 5 });
+  await view.render();
+  await view.until((result) => !result.isReplaying, "replay");
+  let first: SendReceipt | undefined;
+  await act(async () => {
+    first = await view.result().send("Fix the login page", { idempotencyKey: "task-1/start" });
+  });
+  assert.deepEqual(first, { sessionId: "ses-receipts", turnId: "turn-1", status: "queued", duplicate: false });
+  session.append({ turnId: "turn-1", type: "message.completed", data: { text: "Done." } });
+  session.append({ turnId: "turn-1", type: "turn.completed", data: {} });
+  await view.until((result) => !result.isRunning, "turn settled");
+  let again: SendReceipt | undefined;
+  await act(async () => {
+    again = await view.result().send("Fix the login page", { idempotencyKey: "task-1/start" });
+  });
+  assert.deepEqual(again, { sessionId: "ses-receipts", turnId: "turn-1", status: "completed", duplicate: true });
+  assert.equal(view.result().isRunning, false);
+  assert.equal(view.result().turns.length, 1);
   await view.unmount();
 });
 

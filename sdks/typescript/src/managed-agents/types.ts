@@ -134,8 +134,13 @@ export interface CreateSessionParams {
 /** Turn admission, as `POST /sessions/<id>/turns` answers it. */
 export interface TurnReceipt {
   turnId: string;
-  /** `queued` behind earlier turns, or `running` at once. */
-  status: "queued" | "running";
+  /**
+   * The turn's persisted status: `queued` behind earlier turns or `running`
+   * at once for a new turn; for a repeated key, whatever the existing turn
+   * has reached, `completed`, `failed` or `cancelled` included. Nothing is
+   * mapped, so a status the API adds reaches the caller as itself.
+   */
+  status: TurnStatus;
   /** `true` when the `idempotencyKey` had already created the turn. */
   duplicate: boolean;
 }

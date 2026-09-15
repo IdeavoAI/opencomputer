@@ -5,6 +5,7 @@ import {
   emptyTimeline,
   failureMessage,
   inputMessageId,
+  isSettledStatus,
   isSettledTurn,
   memorySaveFromEvent,
   turnsOf,
@@ -14,6 +15,7 @@ import {
   type MemorySave,
   type SessionTimeline,
   type Turn,
+  type TurnStatus,
 } from "./events.js";
 
 export {
@@ -21,6 +23,7 @@ export {
   applyEvents,
   applyTurnEvent,
   emptyTimeline,
+  isSettledStatus,
   isSettledTurn,
   turnsOf,
   type AgentEvent,
@@ -78,8 +81,15 @@ export type UseAgentOptions = CreateAgentOptions | AttachAgentOptions;
 export interface SendReceipt {
   sessionId: string;
   turnId: string;
-  /** `queued` behind earlier turns, or `running` at once. */
-  status: "queued" | "running";
+  /**
+   * The turn's persisted status: `queued` behind earlier turns or `running`
+   * at once for a new turn; for a retried key, whatever the existing turn
+   * has reached, `completed`, `failed` or `cancelled` included. Nothing is
+   * mapped.
+   */
+  status: TurnStatus;
+  /** `true` when the key had already admitted the turn. */
+  duplicate: boolean;
 }
 
 /** The options of one `send`. */
@@ -99,8 +109,9 @@ export interface SendOptions {
  * What `send` rejects with. `code` is the platform's error code when the
  * request was answered (`session_ended`, `memory_admission_unconfirmed`,
  * `insufficient_credits`), `network_error` when it was not, `empty_input`
- * and `busy` when nothing was sent. `status` is the HTTP status when there
- * was one. The hook's `error` is set to the same message.
+ * and `busy` when nothing was sent, `invalid_response` when the admission
+ * reply was not the documented receipt. `status` is the HTTP status when
+ * there was one. The hook's `error` is set to the same message.
  */
 export class SendError extends Error {
   readonly code: string;
@@ -179,9 +190,19 @@ function asSendError(cause: unknown): SendError {
   );
 }
 
-interface TurnAdmission {
-  turnId: string;
-  status: "queued" | "running";
+/** The documented admission reply, checked before it becomes a receipt. */
+function turnAdmission(body: unknown): { turnId: string; status: TurnStatus; duplicate: boolean } {
+  const reply = body as { turnId?: unknown; status?: unknown; duplicate?: unknown } | null;
+  if (
+    !reply ||
+    typeof reply.turnId !== "string" ||
+    !reply.turnId ||
+    typeof reply.status !== "string" ||
+    !reply.status
+  ) {
+    throw new SendError("The admission reply was not a turn receipt.", "invalid_response");
+  }
+  return { turnId: reply.turnId, status: reply.status as TurnStatus, duplicate: reply.duplicate === true };
 }
 
 export function useAgent(
@@ -337,24 +358,24 @@ export function useAgent(
       prompt: string,
       sendOptions: SendOptions,
     ): Promise<SendReceipt> => {
-      const admission = await request<TurnAdmission>(
-        `/sessions/${encodeURIComponent(activeSession)}/turns`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            input: prompt,
-            idempotencyKey: sendOptions.idempotencyKey ?? crypto.randomUUID(),
-            ...(sendOptions.payload !== undefined
-              ? { payload: sendOptions.payload }
-              : {}),
-          }),
-        },
+      const admission = turnAdmission(
+        await request<unknown>(
+          `/sessions/${encodeURIComponent(activeSession)}/turns`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              input: prompt,
+              idempotencyKey: sendOptions.idempotencyKey ?? crypto.randomUUID(),
+              ...(sendOptions.payload !== undefined
+                ? { payload: sendOptions.payload }
+                : {}),
+            }),
+          },
+        ),
       );
-      return {
-        sessionId: activeSession,
-        turnId: admission.turnId,
-        status: admission.status === "running" ? "running" : "queued",
-      };
+      // The receipt is what the platform persisted: a retried key answers
+      // with the existing turn, which may have settled since.
+      return { sessionId: activeSession, ...admission };
     },
     [request],
   );
@@ -390,7 +411,12 @@ export function useAgent(
               turnId: receipt.turnId,
             }),
           });
-          if (!isSettledTurn(timelineRef.current, receipt.turnId)) {
+          // A receipt that already reports a settled turn is not a pending
+          // admission, whether or not the log has caught up with it.
+          if (
+            !isSettledStatus(receipt.status) &&
+            !isSettledTurn(timelineRef.current, receipt.turnId)
+          ) {
             setAdmitted((pending) =>
               pending.includes(receipt.turnId)
                 ? pending

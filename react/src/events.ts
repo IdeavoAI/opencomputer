@@ -129,13 +129,17 @@ export function emptyTimeline(): SessionTimeline {
   };
 }
 
+/** Whether a turn status is terminal: completed, failed or cancelled. */
+export function isSettledStatus(status: string | undefined): boolean {
+  return status === "completed" || status === "failed" || status === "cancelled";
+}
+
 /** Whether the log has settled the turn: completed, failed or cancelled. */
 export function isSettledTurn(
   timeline: SessionTimeline,
   turnId: string,
 ): boolean {
-  const status = timeline.turns[turnId]?.status;
-  return status === "completed" || status === "failed" || status === "cancelled";
+  return isSettledStatus(timeline.turns[turnId]?.status);
 }
 
 /** The turns of a timeline in log order, each with its messages. */

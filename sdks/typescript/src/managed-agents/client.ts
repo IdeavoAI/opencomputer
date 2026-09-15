@@ -96,9 +96,12 @@ export class Turns {
       body,
       signal: options.signal,
     });
+    // The receipt says what the platform persisted. A repeated key answers
+    // with the existing turn, which may have settled since; mapping that to
+    // "queued" told a retrying caller its finished work was waiting.
     return {
       turnId: answer.body.turnId,
-      status: answer.body.status === "running" ? "running" : "queued",
+      status: answer.body.status,
       duplicate: answer.body.duplicate ?? answer.status === 200,
     };
   }

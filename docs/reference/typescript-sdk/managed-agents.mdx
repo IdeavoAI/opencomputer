@@ -103,7 +103,11 @@ validate.
 
 `create` takes `agentId`, `deploymentId`, `environment`, `memory`, `source`
 and `labels` as [documented](/agents/api#create). `turns.send` takes `input`,
-`idempotencyKey`, `mode` and `payload`. `list` takes `project`,
+`idempotencyKey`, `mode` and `payload`. Its receipt carries the turn's
+persisted `status`: `queued` or `running` for a new turn, and for a repeated
+key the existing turn's status, `completed`, `failed` or `cancelled` once it
+has settled, with `duplicate: true`. The client maps nothing, so a retry
+after a lost reply learns what became of the turn. `list` takes `project`,
 `environment`, `agent`, `status`, `labels` (up to three, sent as
 `label.<key>=<value>`), `cursor` and `limit`.
 

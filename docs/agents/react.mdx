@@ -165,10 +165,14 @@ interrupts the running turn without spending a model turn.
 Two composers that each generate their own keys produce two turns; one
 composer retrying with the key it kept produces one.
 
-`send` resolves once the platform has admitted the input as a turn,
-with a receipt `{ sessionId, turnId, status }` where `status` is `queued`
-or `running`. The input appears in `messages` at that point; the log's own
-record of it confirms that message rather than adding a second one.
+`send` resolves once the platform has admitted the input as a turn, with a
+receipt `{ sessionId, turnId, status, duplicate }`. `status` is the turn's
+persisted status: `queued` or `running` for a new turn, and for a retried
+key the existing turn's status, `completed`, `failed` or `cancelled` once it
+has settled, with `duplicate` true. Nothing is mapped, so a retry after a
+lost reply learns what became of the turn, and a settled duplicate never
+sets `isRunning`. The input appears in `messages` at that point; the log's
+own record of it confirms that message rather than adding a second one.
 `isRunning` is true from admission until the log settles the turn, and a
 reply that arrives after the log has already shown the turn completed
 changes nothing.
@@ -182,6 +186,7 @@ can keep the draft:
 | `network_error` | The request was not answered | none |
 | `empty_input` | The text was blank; nothing was sent | none |
 | `busy` | Create mode only: a turn is already running | none |
+| `invalid_response` | The admission reply was not a turn receipt | none |
 
 The hook's `error` is set to the same message either way. A turn that fails
 after admission is not a rejection: the receipt was returned, the failure
@@ -292,7 +297,7 @@ the web application. Credentials are not bundled into browser code.
 | --- | --- |
 | `messages` | User and assistant messages, in log order |
 | `turns` | The session's turns with status, input, messages, tool calls, result and failure, in log order |
-| `send(text, options?)` | Starts a turn; resolves with `{ sessionId, turnId, status }` or rejects with a `SendError`. `options` carries `idempotencyKey` and `payload`. In create mode the first call creates the session |
+| `send(text, options?)` | Starts a turn; resolves with `{ sessionId, turnId, status, duplicate }` or rejects with a `SendError`. `options` carries `idempotencyKey` and `payload`. In create mode the first call creates the session |
 | `stop()` | Interrupts the running turn |
 | `sessionId` | The attached session, or the created one after the first send |
 | `isRunning` | A turn is admitted and not yet settled by the log |
