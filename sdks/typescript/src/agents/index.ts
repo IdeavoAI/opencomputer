@@ -1,4 +1,4 @@
-// @opencomputer/sdk/managed-agents: the management API client and its types.
+// @opencomputer/sdk/agents: the management API client and its types.
 //
 // This module graph is portable: fetch, URL, Headers and Web Crypto only, no
 // Node built-ins, nothing run at import. It loads the same in a Cloudflare

@@ -1,6 +1,6 @@
 # @opencomputer/sdk
 
-The official TypeScript SDK for [OpenComputer](https://github.com/diggerhq/opencomputer): the **cloud sandbox** client at the package root, and the **Serverless Agents** management client on the portable `@opencomputer/sdk/managed-agents` subpath.
+The official TypeScript SDK for [OpenComputer](https://github.com/diggerhq/opencomputer): the **cloud sandbox** client at the package root, and the **Serverless Agents** management client on the portable `@opencomputer/sdk/agents` subpath.
 
 > Versions before 2.0.0 also carried a client for the retired Durable Agent Sessions API; see [CHANGELOG](./CHANGELOG.md).
 
@@ -34,7 +34,7 @@ await sandbox.kill();
 Serverless Agents (`opencomputer deploy`) are managed over the [management API](https://opencomputer.dev/agents/api). The client for it is a separate subpath export whose module graph has no Node dependency and runs nothing at import, so the same code serves a Cloudflare Worker without Node compatibility, Vercel, Deno and Node. Use it from trusted server code; the API key must not reach a browser.
 
 ```typescript
-import { OpenComputer, OpenComputerError } from "@opencomputer/sdk/managed-agents";
+import { OpenComputer, OpenComputerError } from "@opencomputer/sdk/agents";
 
 const oc = new OpenComputer({ apiKey: process.env.OPENCOMPUTER_API_KEY! });
 
@@ -109,7 +109,7 @@ if (delivery.type === "sandbox.stopped") {
 | `apiUrl` | `OPENCOMPUTER_API_URL` | `https://app.opencomputer.dev`   |
 | `apiKey` | `OPENCOMPUTER_API_KEY` | (none)                           |
 
-**Serverless Agents** (`OpenComputer` from `@opencomputer/sdk/managed-agents`):
+**Serverless Agents** (`OpenComputer` from `@opencomputer/sdk/agents`):
 
 | Option    | Default                                            |
 |-----------|----------------------------------------------------|

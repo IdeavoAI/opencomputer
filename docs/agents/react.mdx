@@ -29,13 +29,13 @@ session id.
 Create the session where the API key lives. With memory, that is also where
 the bindings are chosen; the browser can neither see the key nor change what
 the session may read or write. `oc.sessions.startOnDocument` on the
-[management client](/reference/typescript-sdk/managed-agents) creates the
+[management client](/reference/typescript-sdk/agents) creates the
 document if it does not exist yet, then the session bound to it, both
 converging under one idempotency key
 ([details](/agents/document-memory#start-a-session-on-a-new-document)):
 
 ```ts
-import { OpenComputer } from "@opencomputer/sdk/managed-agents";
+import { OpenComputer } from "@opencomputer/sdk/agents";
 
 const oc = new OpenComputer({ apiKey: process.env.OPENCOMPUTER_API_KEY! });
 const { session } = await oc.sessions.startOnDocument({

@@ -30,7 +30,7 @@ function moduleGraph(entry: string): Map<string, string> {
   return seen;
 }
 
-describe("@opencomputer/sdk/managed-agents", () => {
+describe("@opencomputer/sdk/agents", () => {
   const graph = moduleGraph(resolve(here, "index.ts"));
 
   it("reaches only relative modules inside its own directory", () => {

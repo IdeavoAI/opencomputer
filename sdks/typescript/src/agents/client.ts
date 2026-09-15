@@ -493,7 +493,7 @@ export class Deployments {
  * The management API client.
  *
  * ```ts
- * import { OpenComputer } from "@opencomputer/sdk/managed-agents";
+ * import { OpenComputer } from "@opencomputer/sdk/agents";
  * const oc = new OpenComputer({ apiKey: process.env.OPENCOMPUTER_API_KEY! });
  * const { session } = await oc.sessions.create({ agentId: "worker@development" }, { idempotencyKey: taskId });
  * await oc.sessions.turns.send(session.id, { input: "Plan the workshop.", idempotencyKey: `${taskId}/start` });

@@ -190,7 +190,7 @@
               "reference/typescript-sdk/image",
               "reference/typescript-sdk/snapshots",
               "reference/typescript-sdk/secrets",
-              "reference/typescript-sdk/managed-agents"
+              "reference/typescript-sdk/agents"
             ]
           },
           {

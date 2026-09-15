@@ -4,7 +4,7 @@
 // request and warmed on the first `Sandbox.create`.
 //
 // The management API client for Serverless Agents lives on its own portable
-// subpath, `@opencomputer/sdk/managed-agents`, whose module graph has no Node
+// subpath, `@opencomputer/sdk/agents`, whose module graph has no Node
 // dependency. It is not re-exported here so that importing it never drags
 // this graph along.
 

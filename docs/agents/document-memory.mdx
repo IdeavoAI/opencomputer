@@ -97,7 +97,7 @@ application still means "these notes, this session", so the SDK and the CLI
 do the two steps in order and make the pair converge on retry.
 
 ```ts
-import { OpenComputer } from "@opencomputer/sdk/managed-agents";
+import { OpenComputer } from "@opencomputer/sdk/agents";
 
 const oc = new OpenComputer({ apiKey: process.env.OPENCOMPUTER_API_KEY! });
 const { document, session } = await oc.sessions.startOnDocument({
@@ -138,7 +138,7 @@ as "exists" (then `GET` it; `404` means the id was deleted), and `POST
 /api/managed-agents/sessions` with an `Idempotency-Key`; `201` created the
 session, `200` returned the one that key had already created. The call's
 parameters and errors are in the
-[Serverless Agents client reference](/reference/typescript-sdk/managed-agents#start-a-session-on-a-memory-document).
+[Serverless Agents client reference](/reference/typescript-sdk/agents#start-a-session-on-a-memory-document).
 
 ## Reading
 

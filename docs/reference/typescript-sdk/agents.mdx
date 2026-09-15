@@ -1,9 +1,9 @@
 ---
 title: "Serverless Agents client"
-description: "The management API client on the portable @opencomputer/sdk/managed-agents subpath"
+description: "The management API client on the portable @opencomputer/sdk/agents subpath"
 ---
 
-`@opencomputer/sdk/managed-agents` is the TypeScript client for the
+`@opencomputer/sdk/agents` is the TypeScript client for the
 [management API](/agents/api): create sessions, send turns, read the event
 log, list and label sessions, and manage a project's memory, webhooks, event
 subscriptions and GitHub repositories. It is the server-side leg of an
@@ -21,7 +21,7 @@ npm install @opencomputer/sdk
 ```
 
 ```typescript
-import { OpenComputer, OpenComputerError } from "@opencomputer/sdk/managed-agents";
+import { OpenComputer, OpenComputerError } from "@opencomputer/sdk/agents";
 
 const oc = new OpenComputer({ apiKey: process.env.OPENCOMPUTER_API_KEY! });
 ```

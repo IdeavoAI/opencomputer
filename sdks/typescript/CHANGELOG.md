@@ -8,7 +8,7 @@ sessions, credentials, repos, GitHub apps, hooks, watches, schedules and
 destinations resources are removed. Customers of that API pin the last
 published version that has it, `1.1.1`.
 
-- `@opencomputer/sdk/managed-agents` is a new subpath export: the
+- `@opencomputer/sdk/agents` is a new subpath export: the
   `OpenComputer` client for the Serverless Agents management API at
   `app.opencomputer.dev/api/managed-agents`, mirroring the documented routes
   (`sessions`, `sessions.turns`, `sessions.events`, `projects`,

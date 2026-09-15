@@ -10,9 +10,9 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
-    "./managed-agents": {
-      "types": "./dist/managed-agents/index.d.ts",
-      "import": "./dist/managed-agents/index.js"
+    "./agents": {
+      "types": "./dist/agents/index.d.ts",
+      "import": "./dist/agents/index.js"
     },
     "./node": {
       "types": "./dist/node.d.ts",

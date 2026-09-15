@@ -104,7 +104,7 @@ the command exits.
 Applications create sessions with the [management API](/agents/api): `POST
 /api/managed-agents/sessions` with an API key, then turns and the event log
 under that session. The
-[TypeScript client](/reference/typescript-sdk/managed-agents) wraps those
+[TypeScript client](/reference/typescript-sdk/agents) wraps those
 routes; its `sessions.startOnDocument` creates a memory document and a
 session bound to it in one call. In the browser, the
 [`useAgent`](/agents/react) hook attaches to a session your server created
