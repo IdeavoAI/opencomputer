@@ -260,7 +260,19 @@ export type SessionEvent =
   | (EventBase & { type: "turn.started"; data: Record<string, never> })
   | (EventBase & { type: "turn.completed"; data: Record<string, never> })
   | (EventBase & { type: "turn.failed"; data: Failure })
-  | (EventBase & { type: "turn.cancelled"; data: { reason: "interrupted" | (string & {}); replacementTurnId?: string } })
+  | (EventBase & {
+      type: "turn.cancelled";
+      data: {
+        reason: "interrupted" | (string & {});
+        replacementTurnId?: string;
+        /** How long after the interrupt the turn settled, once the commands it had started were stopped (per design 1c07584, backend in flight). */
+        settledAfterMs?: number;
+        /** How many commands were stopped for the turn to settle. */
+        operationsSettled?: number;
+        /** `true` when a command could not be confirmed stopped and the computer was replaced. */
+        computerTerminated?: boolean;
+      };
+    })
   | (EventBase & { type: "message.delta"; data: { text: string } })
   | (EventBase & { type: "message.completed"; data: { text: string } })
   | (EventBase & { type: "reasoning.delta"; data: { text: string } })

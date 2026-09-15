@@ -283,6 +283,21 @@ person agreed to, whether or not the session that proposed it still exists.
 A tool that waits needs a conversation to ask in. Called from the playground,
 a schedule or a webhook, there is nobody to ask, and the call fails saying so.
 
+## Computer commands
+
+Every session runs on its own computer, and the model runs commands on it
+through the built-in `shell` tool. A command runs in the session's workspace
+and takes `command` and an optional `timeoutSeconds`: 120 by default, at
+most 1800, and never more than the computer's remaining lifetime allows; a
+value out of range fails the call before anything runs. A command is not
+started on a computer that cannot host it for its full timeout; a fresh
+computer is used instead.
+
+When the timeout passes, the command and every process it started are
+stopped, and the call fails as a tool error the model sees: it names the
+command and the timeout and carries the output so far. The turn continues,
+and files the command wrote before it was stopped remain.
+
 ## Tools versus skills and MCP
 
 - A tool executes TypeScript you own.

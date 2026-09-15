@@ -110,7 +110,7 @@ insufficient_credits`.
 | `id`, `agentId`, `deploymentId` | The session and the deployment it pins |
 | `projectId` | The project the agent belongs to |
 | `environment` | `development` or `production`, when the request named one |
-| `status` | `new`, `connecting`, `idle`, `running`, `waiting_runtime`, `suspending`, `suspended`, `resuming`, `failed` or `ended` |
+| `status` | `new`, `connecting`, `idle`, `running`, `stopping`, `waiting_runtime`, `suspending`, `suspended`, `resuming`, `failed` or `ended` |
 | `source` | The `source` given at creation |
 | `labels`, `labelsUpdatedAt` | Your metadata, and when it last changed; see [Labels](#labels) |
 | `memory` | Bindings with `resource`, `scope`, `id`, `access` and `writable`; present when the session was created with bindings |
@@ -188,8 +188,14 @@ revocation was not acknowledged; retry, or
 ended session returns it unchanged.
 
 `POST /sessions/<id>/interrupt` stops the running turn without spending a
-model turn. The turn settles as `cancelled` with reason `interrupted`, the
-runtime is told to stop, and the next queued turn starts. An idle session is
+model turn. The response shows the session as `stopping` with the turn still
+`running`: the model loop is stopped, and every command the turn had started
+on its computer is stopped before the turn settles. The turn then settles as
+`cancelled` with reason `interrupted`, the session returns to `idle` and the
+next queued turn starts. A command that cannot be confirmed stopped is
+resolved by replacing the computer, and the turn settles once the
+replacement is confirmed; the turn's `turn.cancelled` event records how the
+stop settled ([Session events](/agents/events#turns)). An idle session is
 returned unchanged.
 
 ## Turns

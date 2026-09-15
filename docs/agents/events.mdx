@@ -43,9 +43,14 @@ unknown type as informational and keep reading.
 | Type | When | `data` |
 | --- | --- | --- |
 | `session.created` | The session exists. Always the first event. | `agentId`, `deploymentId` |
-| `session.status_changed` | The session moved between `new`, `connecting`, `idle`, `running`, `waiting_runtime`, `suspending`, `suspended`, `resuming`, `failed` and `ended` | `from`, `to` |
+| `session.status_changed` | The session moved between `new`, `connecting`, `idle`, `running`, `stopping`, `waiting_runtime`, `suspending`, `suspended`, `resuming`, `failed` and `ended` | `from`, `to` |
 | `session.ended` | The owner ended the session. Queued and running turns were cancelled and memory writes revoked. | none |
 | `session.failed` | The session cannot continue | `code`, `message`: a [public failure](#public-failures) |
+
+`stopping` follows an [interrupt](/agents/api#end-and-interrupt) or an
+interrupt-mode turn: the session stays there until the stopped turn's
+commands are confirmed stopped or its computer is replaced, then `idle`
+follows and the next turn starts.
 
 ### Turns
 
@@ -58,7 +63,7 @@ unknown type as informational and keep reading.
 | `turn.started` | The runtime began the turn | none |
 | `turn.completed` | The turn finished and the session is idle again | none |
 | `turn.failed` | The turn stopped with an error | `code`, `message`, and `model` or `tool` when named: a [public failure](#public-failures) |
-| `turn.cancelled` | The turn was stopped by an interrupt | `reason`: `interrupted`; `replacementTurnId` when an interrupt-mode turn replaced it |
+| `turn.cancelled` | The turn was stopped by an interrupt, once the work it had started was stopped | `reason`: `interrupted`; `replacementTurnId` when an interrupt-mode turn replaced it; `settledAfterMs`: how long after the interrupt the turn settled; `operationsSettled`: how many commands were stopped; `computerTerminated`: `true` when a command could not be confirmed stopped and the computer was replaced |
 
 #### Public failures
 
