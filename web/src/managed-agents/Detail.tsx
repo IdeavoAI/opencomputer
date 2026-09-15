@@ -78,6 +78,7 @@ import { ManagedAgentSchedules } from './Schedules'
 import { ManagedAgentWebhooks } from './Webhooks'
 import { ManagedProjectMemory } from './Memory'
 import { ManagedProjectBYOK } from './BYOK'
+import { ManagedProjectGitHub } from './GitHub'
 import { AgentMarkdown } from './AgentMarkdown'
 import {
   projectCloneCommand,
@@ -94,7 +95,24 @@ type DetailTab =
   | 'webhooks'
   | 'memory'
   | 'secrets'
+  | 'connections'
+  | 'github'
   | 'byok'
+
+export const PROJECT_DETAIL_TABS = new Set<DetailTab>([
+  'playground',
+  'deployments',
+  'sessions',
+  'channels',
+  'outboxes',
+  'schedules',
+  'webhooks',
+  'memory',
+  'secrets',
+  'connections',
+  'github',
+  'byok',
+])
 
 const EMPTY_MANAGED_AGENT_EVENTS: ManagedAgentEvent[] = []
 
@@ -506,21 +524,11 @@ export default function ManagedAgentDetail({
   const [standaloneTab, setStandaloneTab] = useState<DetailTab>('playground')
   const [starterCopied, setStarterCopied] = useState(false)
   const [continuationCopied, setContinuationCopied] = useState(false)
-  const routeTab = params.tab as DetailTab | undefined
-  const projectTabs = new Set<DetailTab>([
-    'playground',
-    'deployments',
-    'sessions',
-    'channels',
-    'outboxes',
-    'schedules',
-    'webhooks',
-    'memory',
-    'secrets',
-    'byok',
-  ])
+  const requestedRouteTab = params.tab as DetailTab | undefined
+  const routeTab =
+    requestedRouteTab === 'github' ? 'connections' : requestedRouteTab
   const activeTab = project
-    ? routeTab && projectTabs.has(routeTab)
+    ? routeTab && PROJECT_DETAIL_TABS.has(routeTab)
       ? routeTab
       : 'playground'
     : standaloneTab
@@ -705,6 +713,9 @@ export default function ManagedAgentDetail({
     ...(project ? ([{ id: 'webhooks', label: 'Webhooks' }] as const) : []),
     ...(project ? ([{ id: 'memory', label: 'Memory' }] as const) : []),
     ...(project ? ([{ id: 'secrets', label: 'Secrets' }] as const) : []),
+    ...(project
+      ? ([{ id: 'connections', label: 'Connections' }] as const)
+      : []),
     ...(project ? ([{ id: 'byok', label: 'BYOK' }] as const) : []),
   ]
 
@@ -1207,6 +1218,13 @@ export default function ManagedAgentDetail({
         <ManagedProjectBYOK
           projectId={project.project.id}
           projectSlug={project.project.slug}
+        />
+      ) : null}
+
+      {activeTab === 'connections' && project ? (
+        <ManagedProjectGitHub
+          projectId={project.project.id}
+          environment={environment}
         />
       ) : null}
     </div>

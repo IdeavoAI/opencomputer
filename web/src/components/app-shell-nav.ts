@@ -96,6 +96,11 @@ export function managedAgentsNav(options: {
             icon: KeySquare,
           },
           {
+            to: `${projectPath}/connections`,
+            label: 'Connections',
+            icon: Plug,
+          },
+          {
             to: `${projectPath}/byok`,
             label: 'BYOK',
             icon: BrainCircuit,

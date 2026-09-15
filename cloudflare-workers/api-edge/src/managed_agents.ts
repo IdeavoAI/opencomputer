@@ -165,7 +165,8 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
     message = "The requested agent resource was not found.";
   } else if (upstream.status === 409) {
     if (backendCode === "invalid_model_selection") {
-      message = backendMessage || "The deployment selects an unavailable model.";
+      message =
+        backendMessage || "The deployment selects an unavailable model.";
     } else if (backendCode === "destination_verification_failed") {
       if (
         backendMessage === "Invite the Slack app to this conversation first"
@@ -302,10 +303,16 @@ async function memoryResponse(
   }
   if (!upstream.ok) {
     if (upstream.status >= 500) return publicErrorResponse(upstream);
-    const body = record(await upstream.clone().json().catch(() => null));
+    const body = record(
+      await upstream
+        .clone()
+        .json()
+        .catch(() => null),
+    );
     const error = record(body?.error);
     const code =
-      typeof error?.code === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(error.code)
+      typeof error?.code === "string" &&
+      /^[a-z][a-z0-9_]{0,63}$/.test(error.code)
         ? error.code
         : null;
     const message =
@@ -637,7 +644,9 @@ function publicWebhook(
     agentId: webhook.agentId,
     name: webhook.name,
     enabled: webhook.enabled,
-    ...(typeof webhook.identity === "string" ? { identity: webhook.identity } : {}),
+    ...(typeof webhook.identity === "string"
+      ? { identity: webhook.identity }
+      : {}),
     // The token is the credential; when this response carries it (create,
     // rotate), the URL carries it too and is shown once. Listings never do.
     ...(publicOrigin && id
@@ -667,7 +676,9 @@ function publicWebhookRequest(value: unknown): Record<string, unknown> {
     deploymentId: request.deploymentId,
     sessionId: request.sessionId,
     outcome: request.outcome,
-    ...(typeof request.attempt === "number" ? { attempt: request.attempt } : {}),
+    ...(typeof request.attempt === "number"
+      ? { attempt: request.attempt }
+      : {}),
     ...(request.terminal === true ? { terminal: true } : {}),
     ...(request.error
       ? { error: "The webhook request could not start a session." }
@@ -832,8 +843,7 @@ const FAILURE_REASON_CODES: Record<string, PublicFailureCode> = {
 
 // A parameter is the only runtime-derived text a public failure carries, so
 // it must look like what it claims to be; anything else is dropped.
-const MODEL_ID =
-  /^(?:[a-z][a-z0-9-]{0,31}\/)?[a-z0-9][a-z0-9._:-]{0,63}$/i;
+const MODEL_ID = /^(?:[a-z][a-z0-9-]{0,31}\/)?[a-z0-9][a-z0-9._:-]{0,63}$/i;
 const TOOL_ID = /^[a-z0-9_][a-z0-9_.-]{0,63}$/i;
 const CREDENTIAL_SHAPED =
   /^(?:sk|osb|ghp|gho|ghs|ghu|ghr|github_pat|xox[abprs]|key|token|secret)[-_]/i;
@@ -865,7 +875,8 @@ const FAILURE_MESSAGE_RULES: ReadonlyArray<{
   },
   {
     code: "model_unavailable",
-    pattern: /\bmodel (?:is )?not (?:found|available|supported)\b|ModelNotFound/i,
+    pattern:
+      /\bmodel (?:is )?not (?:found|available|supported)\b|ModelNotFound/i,
   },
   {
     code: "context_too_long",
@@ -885,7 +896,8 @@ const FAILURE_MESSAGE_RULES: ReadonlyArray<{
   },
   {
     code: "tool_failed",
-    pattern: /^(?:Unknown tool|Tool) "?([A-Za-z0-9_.-]+)"? (?:failed|is not (?:available|registered)|threw)/,
+    pattern:
+      /^(?:Unknown tool|Tool) "?([A-Za-z0-9_.-]+)"? (?:failed|is not (?:available|registered)|threw)/,
     parameter: "tool",
   },
   { code: "tool_failed", pattern: /^The tool has no edge implementation/ },
@@ -1091,6 +1103,12 @@ function publicSuccessBody(
   }
   if (method === "POST" && suffix === "/projects") {
     return publicProject(body);
+  }
+  if (
+    /^\/github(?:\/connect)?$/.test(suffix) ||
+    /^\/projects\/[^/]+\/github(?:\/(?:connect|attach))?$/.test(suffix)
+  ) {
+    return stripPrivateValues(body);
   }
   if (
     (method === "GET" || method === "PUT") &&
@@ -1585,6 +1603,9 @@ async function deploySourceAgent(
       httpConnections: Array.isArray(body.httpConnections)
         ? body.httpConnections
         : [],
+      githubConnections: Array.isArray(body.githubConnections)
+        ? body.githubConnections
+        : [],
       memory: Array.isArray(body.memory) ? body.memory : [],
       models,
       ...(body.projectDeployment && typeof body.projectDeployment === "object"
@@ -1617,8 +1638,22 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   if ((method === "GET" || method === "POST") && suffix === "/projects") {
     return true;
   }
+  if (method === "GET" && suffix === "/github") return true;
+  if (method === "POST" && suffix === "/github/connect") return true;
   if (method === "GET" && /^\/projects\/[^/]+$/.test(suffix)) return true;
   if (method === "GET" && /^\/projects\/[^/]+\/source-archive$/.test(suffix)) {
+    return true;
+  }
+  if (
+    (method === "GET" || method === "DELETE") &&
+    /^\/projects\/[^/]+\/github$/.test(suffix)
+  ) {
+    return true;
+  }
+  if (
+    method === "POST" &&
+    /^\/projects\/[^/]+\/github\/(connect|attach)$/.test(suffix)
+  ) {
     return true;
   }
   if (
@@ -1713,6 +1748,49 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
       suffix,
     )
   );
+}
+
+export async function handleManagedGitHubCallback(
+  request: Request,
+  env: ManagedAgentsEnv,
+): Promise<Response> {
+  if (request.method !== "GET") {
+    return new Response("Method not allowed", { status: 405 });
+  }
+  const requestURL = new URL(request.url);
+  const base = (
+    env.MANAGED_AGENTS_API_URL ?? DEFAULT_MANAGED_AGENTS_API_URL
+  ).replace(/\/+$/, "");
+  const target = new URL(`${base}/v1/github/callback${requestURL.search}`);
+  if (target.protocol !== "https:" && target.hostname !== "localhost") {
+    return new Response("GitHub connection is unavailable", { status: 503 });
+  }
+  try {
+    const upstream = await fetch(target, { redirect: "manual" });
+    const headers = new Headers();
+    for (const name of [
+      "content-type",
+      "cache-control",
+      "content-security-policy",
+      "referrer-policy",
+      "x-content-type-options",
+      "x-frame-options",
+    ]) {
+      const value = upstream.headers.get(name);
+      if (value) headers.set(name, value);
+    }
+    headers.set("cache-control", "no-store");
+    return new Response(upstream.body, {
+      status: upstream.status,
+      statusText: upstream.statusText,
+      headers,
+    });
+  } catch {
+    return new Response("GitHub connection is temporarily unavailable", {
+      status: 502,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  }
 }
 
 function channelConnectionPage(
@@ -1854,13 +1932,20 @@ const WEBHOOK_HEADERS_NOT_FORWARDED = new Set([
   "x-request-id",
   "x-api-key",
 ]);
-const WEBHOOK_HEADER_PREFIXES_NOT_FORWARDED = ["x-oc-", "cf-", "x-forwarded-", "x-real-"];
+const WEBHOOK_HEADER_PREFIXES_NOT_FORWARDED = [
+  "x-oc-",
+  "cf-",
+  "x-forwarded-",
+  "x-real-",
+];
 
 function forwardableWebhookHeader(name: string): boolean {
   const lower = name.toLowerCase();
   return (
     !WEBHOOK_HEADERS_NOT_FORWARDED.has(lower) &&
-    !WEBHOOK_HEADER_PREFIXES_NOT_FORWARDED.some((prefix) => lower.startsWith(prefix))
+    !WEBHOOK_HEADER_PREFIXES_NOT_FORWARDED.some((prefix) =>
+      lower.startsWith(prefix),
+    )
   );
 }
 
@@ -1927,7 +2012,8 @@ export async function handleAgentWebhookInvocation(
   });
   if (authorization) headers.set("authorization", authorization);
   for (const [name, value] of request.headers) {
-    if (forwardableWebhookHeader(name) && !headers.has(name)) headers.set(name, value);
+    if (forwardableWebhookHeader(name) && !headers.has(name))
+      headers.set(name, value);
   }
   try {
     const upstream = await fetch(target, {

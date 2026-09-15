@@ -40,6 +40,7 @@ export interface BuiltAgentArtifact {
   channels: string[];
   connections: string[];
   httpConnections: HttpConnectionManifest[];
+  githubConnections: GitHubConnectionManifest[];
   memory: MemoryDeclaration[];
   models: Array<{ provider: string; model: string }>;
   body: Buffer;
@@ -80,6 +81,16 @@ export interface HttpConnectionManifest {
   methods?: string[];
   pathPrefix?: string;
   redirectOrigins?: Array<{ origin: string; pathPrefix?: string }>;
+}
+
+export type GitHubAppPermission = "read" | "write";
+
+export interface GitHubConnectionManifest {
+  id: string;
+  provider: {
+    kind: "github-app";
+    permissions: Record<string, GitHubAppPermission>;
+  };
 }
 
 export interface McpServerManifest {
@@ -477,9 +488,7 @@ export default function Agent() {
         private: true,
         type: "module",
         scripts: {
-          ...(spa
-            ? { "dev:web": "vite", build: "tsc -b && vite build" }
-            : {}),
+          ...(spa ? { "dev:web": "vite", build: "tsc -b && vite build" } : {}),
           session: "opencomputer session",
           deploy: "opencomputer deploy",
         },
@@ -829,7 +838,9 @@ function declaredServiceProviders(agentSource: string): string[] {
   }
   return [
     ...new Set(
-      declared.map((service) => MANAGED_SERVICE_PROVIDERS[service.trim().toLowerCase()]!),
+      declared.map(
+        (service) => MANAGED_SERVICE_PROVIDERS[service.trim().toLowerCase()]!,
+      ),
     ),
   ];
 }
@@ -950,11 +961,12 @@ function definedMcpServers(
  */
 type MemoryAuthoringFunction = "defineMemory" | "documentMemory" | "httpMemory";
 
-const MEMORY_AUTHORING_FUNCTIONS: ReadonlySet<string> = new Set<MemoryAuthoringFunction>([
-  "defineMemory",
-  "documentMemory",
-  "httpMemory",
-]);
+const MEMORY_AUTHORING_FUNCTIONS: ReadonlySet<string> =
+  new Set<MemoryAuthoringFunction>([
+    "defineMemory",
+    "documentMemory",
+    "httpMemory",
+  ]);
 
 const AGENT_PACKAGE = "@opencomputer/agent";
 
@@ -1003,8 +1015,14 @@ class MemorySourceResolver {
     let file = this.files.get(path);
     if (!file) {
       const module = this.modules.find((candidate) => candidate.path === path);
-      if (!module) throw new Error(`Agent source module ${path} is not in the build`);
-      file = ts.createSourceFile(path, module.source, ts.ScriptTarget.Latest, true);
+      if (!module)
+        throw new Error(`Agent source module ${path} is not in the build`);
+      file = ts.createSourceFile(
+        path,
+        module.source,
+        ts.ScriptTarget.Latest,
+        true,
+      );
       this.files.set(path, file);
     }
     return file;
@@ -1024,7 +1042,9 @@ class MemorySourceResolver {
       ...["ts", "tsx", "js", "jsx", "mts", "mjs", "cts", "cjs"].map(
         (extension) => `${base}.${extension}`,
       ),
-      ...["ts", "tsx", "js", "jsx"].map((extension) => `${base}/index.${extension}`),
+      ...["ts", "tsx", "js", "jsx"].map(
+        (extension) => `${base}/index.${extension}`,
+      ),
     ];
     return candidates.find((candidate) =>
       this.modules.some((module) => module.path === candidate),
@@ -1053,7 +1073,8 @@ class MemorySourceResolver {
           : undefined;
       if (!statement.exportClause) {
         // export * from "..."
-        for (const [name, fn] of from?.functions ?? []) result.functions.set(name, fn);
+        for (const [name, fn] of from?.functions ?? [])
+          result.functions.set(name, fn);
         for (const name of from?.namespaces ?? []) result.namespaces.add(name);
         continue;
       }
@@ -1092,10 +1113,16 @@ class MemorySourceResolver {
     for (const statement of this.file(path).statements) {
       if (!ts.isImportDeclaration(statement)) continue;
       const clause = statement.importClause;
-      if (!clause || clause.isTypeOnly || !ts.isStringLiteral(statement.moduleSpecifier)) {
+      if (
+        !clause ||
+        clause.isTypeOnly ||
+        !ts.isStringLiteral(statement.moduleSpecifier)
+      ) {
         continue;
       }
-      const from = this.exportsOf(this.target(path, statement.moduleSpecifier.text));
+      const from = this.exportsOf(
+        this.target(path, statement.moduleSpecifier.text),
+      );
       if (!from.functions.size && !from.namespaces.size) continue;
       const named = clause.namedBindings;
       if (named && ts.isNamespaceImport(named)) {
@@ -1106,7 +1133,8 @@ class MemorySourceResolver {
           const imported = (specifier.propertyName ?? specifier.name).text;
           const fn = from.functions.get(imported);
           if (fn) bindings.functions.set(specifier.name.text, fn);
-          if (from.namespaces.has(imported)) bindings.namespaces.add(specifier.name.text);
+          if (from.namespaces.has(imported))
+            bindings.namespaces.add(specifier.name.text);
         }
       }
     }
@@ -1158,12 +1186,19 @@ function assertMemoryFunctionsCalledDirectly(
   const bindings = resolver.bindingsOf(path);
   const visit = (node: ts.Node): void => {
     if (isTypeOnlyContext(node)) return;
-    if (ts.isExportDeclaration(node) && node.moduleSpecifier && node.exportClause &&
-        ts.isNamedExports(node.exportClause) && ts.isStringLiteral(node.moduleSpecifier)) {
+    if (
+      ts.isExportDeclaration(node) &&
+      node.moduleSpecifier &&
+      node.exportClause &&
+      ts.isNamedExports(node.exportClause) &&
+      ts.isStringLiteral(node.moduleSpecifier)
+    ) {
       // export { a as b } from "...": an aliased re-export of an authoring
       // function would let importers call it under a name the compiler does
       // not register from.
-      const from = resolver.exportsOf(resolver.target(path, node.moduleSpecifier.text));
+      const from = resolver.exportsOf(
+        resolver.target(path, node.moduleSpecifier.text),
+      );
       for (const specifier of node.exportClause.elements) {
         if (specifier.isTypeOnly || !specifier.propertyName) continue;
         const imported = specifier.propertyName.text;
@@ -1179,7 +1214,8 @@ function assertMemoryFunctionsCalledDirectly(
     if (
       ts.isCallExpression(node) &&
       (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
-        (ts.isIdentifier(node.expression) && node.expression.text === "require"))
+        (ts.isIdentifier(node.expression) &&
+          node.expression.text === "require"))
     ) {
       const argument = node.arguments[0];
       if (argument && ts.isStringLiteralLike(argument)) {
@@ -1213,13 +1249,21 @@ function assertMemoryFunctionsCalledDirectly(
           );
         }
       }
-      if (bindings.namespaces.has(node.text) && !ts.isNamespaceImport(parent) &&
-          !(ts.isImportSpecifier(parent) && parent.name === node)) {
+      if (
+        bindings.namespaces.has(node.text) &&
+        !ts.isNamespaceImport(parent) &&
+        !(ts.isImportSpecifier(parent) && parent.name === node)
+      ) {
         const namespace = node.text;
-        if (ts.isPropertyAccessExpression(parent) && parent.expression === node) {
+        if (
+          ts.isPropertyAccessExpression(parent) &&
+          parent.expression === node
+        ) {
           const member = parent.name.text;
           if (MEMORY_AUTHORING_FUNCTIONS.has(member)) {
-            const called = ts.isCallExpression(parent.parent) && parent.parent.expression === parent;
+            const called =
+              ts.isCallExpression(parent.parent) &&
+              parent.parent.expression === parent;
             throw new Error(
               called
                 ? `${path} calls ${namespace}.${member}(); ${DIRECT_CALL_HINT(member)}`
@@ -1228,7 +1272,10 @@ function assertMemoryFunctionsCalledDirectly(
           }
           return;
         }
-        if (ts.isElementAccessExpression(parent) && parent.expression === node) {
+        if (
+          ts.isElementAccessExpression(parent) &&
+          parent.expression === node
+        ) {
           const key = parent.argumentExpression;
           if (!ts.isStringLiteralLike(key)) {
             throw new Error(
@@ -1236,7 +1283,9 @@ function assertMemoryFunctionsCalledDirectly(
             );
           }
           if (MEMORY_AUTHORING_FUNCTIONS.has(key.text)) {
-            const called = ts.isCallExpression(parent.parent) && parent.parent.expression === parent;
+            const called =
+              ts.isCallExpression(parent.parent) &&
+              parent.parent.expression === parent;
             throw new Error(
               called
                 ? `${path} calls ${namespace}[${JSON.stringify(key.text)}](); ${DIRECT_CALL_HINT(key.text)}`
@@ -1285,10 +1334,7 @@ function literalObjectEntries(
         `${label} cannot use methods or accessors; write each option as a literal property`,
       );
     }
-    return [
-      staticPropertyName(property.name, label),
-      property.initializer,
-    ];
+    return [staticPropertyName(property.name, label), property.initializer];
   });
 }
 
@@ -1462,9 +1508,15 @@ function definedMemory(
  * naming both origins.
  */
 export function mergeMemoryDeclarations(
-  entries: ReadonlyArray<{ origin: string; memory: readonly MemoryDeclaration[] }>,
+  entries: ReadonlyArray<{
+    origin: string;
+    memory: readonly MemoryDeclaration[];
+  }>,
 ): MemoryDeclaration[] {
-  const merged = new Map<string, { origin: string; declaration: MemoryDeclaration }>();
+  const merged = new Map<
+    string,
+    { origin: string; declaration: MemoryDeclaration }
+  >();
   for (const { origin, memory } of entries) {
     for (const declaration of memory) {
       const existing = merged.get(declaration.id);
@@ -1656,7 +1708,9 @@ function replyDestinationsManifest(
         throw new Error(`${path} has invalid destination ${name}`);
       }
       if (!ts.isObjectLiteralExpression(property.initializer)) {
-        throw new Error(`${path} destination ${name} must be an object literal`);
+        throw new Error(
+          `${path} destination ${name} must be an object literal`,
+        );
       }
       const type = literalStringValue(
         objectProperty(property.initializer, "type"),
@@ -1683,7 +1737,10 @@ function channelDefinition(
   if (!input || !ts.isObjectLiteralExpression(input)) {
     throw new Error(`${path} defineChannel() requires an object literal`);
   }
-  const id = literalStringValue(objectProperty(input, "id"), `${path} channel id`);
+  const id = literalStringValue(
+    objectProperty(input, "id"),
+    `${path} channel id`,
+  );
   if (basename(path, ".ts") !== id || !AGENT_ID_PATTERN.test(id)) {
     throw new Error(`${path} filename must match its valid channel id`);
   }
@@ -1757,7 +1814,9 @@ function channelDefinition(
         throw new Error(`${path} has invalid destination ${name}`);
       }
       if (!ts.isObjectLiteralExpression(property.initializer)) {
-        throw new Error(`${path} destination ${name} must be an object literal`);
+        throw new Error(
+          `${path} destination ${name} must be an object literal`,
+        );
       }
       const destinationType = literalStringValue(
         objectProperty(property.initializer, "type"),
@@ -1773,7 +1832,8 @@ function channelDefinition(
       ) {
         throw new Error(`${path} destination ${name} is unsupported`);
       }
-      const required = visibility === "private" ? "groups:read" : "channels:read";
+      const required =
+        visibility === "private" ? "groups:read" : "channels:read";
       if (!scopes.includes(required) || !scopes.includes("chat:write")) {
         throw new Error(
           `${path} destination ${name} requires ${required} and chat:write`,
@@ -1814,7 +1874,8 @@ function channelRegistration(
     "channel",
   );
   const channel = channels.get(channelId);
-  if (!channel) throw new Error(`${path} references unknown channel ${channelId}`);
+  if (!channel)
+    throw new Error(`${path} references unknown channel ${channelId}`);
   const triggers = [
     ...new Set(
       literalStringArray(objectProperty(input, "on"), `${path} triggers`),
@@ -1839,7 +1900,9 @@ function channelRegistration(
     }
     const event = triggerEvents[trigger];
     if (!event || !channel.events.includes(event)) {
-      throw new Error(`${path} trigger ${trigger} is not declared by ${channelId}`);
+      throw new Error(
+        `${path} trigger ${trigger} is not declared by ${channelId}`,
+      );
     }
   }
   return {
@@ -1859,7 +1922,10 @@ function outboxDefinition(
   if (!input || !ts.isObjectLiteralExpression(input)) {
     throw new Error(`${path} defineOutbox() requires an object literal`);
   }
-  const id = literalStringValue(objectProperty(input, "id"), `${path} outbox id`);
+  const id = literalStringValue(
+    objectProperty(input, "id"),
+    `${path} outbox id`,
+  );
   if (basename(path, ".ts") !== id || !AGENT_ID_PATTERN.test(id)) {
     throw new Error(`${path} filename must match its valid outbox id`);
   }
@@ -1869,7 +1935,9 @@ function outboxDefinition(
   }
   const channelExpression = objectProperty(delivery, "channel");
   if (!channelExpression || !ts.isIdentifier(channelExpression)) {
-    throw new Error(`${path} delivery.channel must reference an imported channel`);
+    throw new Error(
+      `${path} delivery.channel must reference an imported channel`,
+    );
   }
   const channelId = importedResourceId(
     source,
@@ -1954,7 +2022,10 @@ function scheduleDefinition(
   if (!input || !ts.isObjectLiteralExpression(input)) {
     throw new Error(`${path} defineSchedule() requires an object literal`);
   }
-  const id = literalStringValue(objectProperty(input, "id"), `${path} schedule id`);
+  const id = literalStringValue(
+    objectProperty(input, "id"),
+    `${path} schedule id`,
+  );
   if (basename(path, ".ts") !== id || !AGENT_ID_PATTERN.test(id)) {
     throw new Error(`${path} filename must match its valid schedule id`);
   }
@@ -2003,7 +2074,10 @@ function scheduleDefinition(
     throw new Error(`${path} overlap must be "skip" or "allow"`);
   }
   const dispatchExpression = objectProperty(input, "dispatch");
-  if (!dispatchExpression || !ts.isObjectLiteralExpression(dispatchExpression)) {
+  if (
+    !dispatchExpression ||
+    !ts.isObjectLiteralExpression(dispatchExpression)
+  ) {
     throw new Error(`${path} dispatch must be an object literal`);
   }
   const textExpression = objectProperty(dispatchExpression, "text");
@@ -2047,20 +2121,25 @@ export async function readProjectResources(
 ): Promise<BuiltProjectResources> {
   const opencomputer = resolve(projectRoot, "opencomputer");
   const channelDefinitions = await Promise.all(
-    (await typescriptFiles(resolve(opencomputer, "channels"))).map(async (path) =>
-      channelDefinition(await readFile(path, "utf8"), path),
+    (await typescriptFiles(resolve(opencomputer, "channels"))).map(
+      async (path) => channelDefinition(await readFile(path, "utf8"), path),
     ),
   );
-  const channels = new Map(channelDefinitions.map((channel) => [channel.id, channel]));
+  const channels = new Map(
+    channelDefinitions.map((channel) => [channel.id, channel]),
+  );
   if (channels.size !== channelDefinitions.length) {
     throw new Error("Project channel IDs must be unique");
   }
   const outboxDefinitions = await Promise.all(
-    (await typescriptFiles(resolve(opencomputer, "outboxes"))).map(async (path) =>
-      outboxDefinition(await readFile(path, "utf8"), path, channels),
+    (await typescriptFiles(resolve(opencomputer, "outboxes"))).map(
+      async (path) =>
+        outboxDefinition(await readFile(path, "utf8"), path, channels),
     ),
   );
-  const outboxes = new Map(outboxDefinitions.map((outbox) => [outbox.id, outbox]));
+  const outboxes = new Map(
+    outboxDefinitions.map((outbox) => [outbox.id, outbox]),
+  );
   if (outboxes.size !== outboxDefinitions.length) {
     throw new Error("Project outbox IDs must be unique");
   }
@@ -2097,7 +2176,9 @@ export async function readProjectResources(
         ),
       );
     }
-    for (const path of await typescriptFiles(resolve(agent.root, "schedules"))) {
+    for (const path of await typescriptFiles(
+      resolve(agent.root, "schedules"),
+    )) {
       schedules.push(
         scheduleDefinition(await readFile(path, "utf8"), path, agent.localId),
       );
@@ -2109,16 +2190,26 @@ export async function readProjectResources(
   }
   const manifest: ProjectResourceManifest = {
     version: 1,
-    channels: channelDefinitions.sort((left, right) => left.id.localeCompare(right.id)),
-    channelRegistrations: channelRegistrations.sort((left, right) =>
-      `${left.channelId}:${left.agentId}`.localeCompare(`${right.channelId}:${right.agentId}`),
+    channels: channelDefinitions.sort((left, right) =>
+      left.id.localeCompare(right.id),
     ),
-    outboxes: outboxDefinitions.sort((left, right) => left.id.localeCompare(right.id)),
+    channelRegistrations: channelRegistrations.sort((left, right) =>
+      `${left.channelId}:${left.agentId}`.localeCompare(
+        `${right.channelId}:${right.agentId}`,
+      ),
+    ),
+    outboxes: outboxDefinitions.sort((left, right) =>
+      left.id.localeCompare(right.id),
+    ),
     outboxRegistrations: outboxRegistrations.sort((left, right) =>
-      `${left.outboxId}:${left.agentId}`.localeCompare(`${right.outboxId}:${right.agentId}`),
+      `${left.outboxId}:${left.agentId}`.localeCompare(
+        `${right.outboxId}:${right.agentId}`,
+      ),
     ),
     schedules: schedules.sort((left, right) =>
-      `${left.agentId}:${left.id}`.localeCompare(`${right.agentId}:${right.id}`),
+      `${left.agentId}:${left.id}`.localeCompare(
+        `${right.agentId}:${right.id}`,
+      ),
     ),
     gatedTools: gatedTools.sort((left, right) =>
       `${left.agentId}:${left.toolId}`.localeCompare(
@@ -2230,6 +2321,10 @@ function definedHttpConnections(
       const input = node.arguments[0];
       if (!input || !ts.isObjectLiteralExpression(input)) {
         throw new Error("defineConnection() requires an object literal");
+      }
+      if (objectProperty(input, "provider")) {
+        ts.forEachChild(node, visit);
+        return;
       }
       const id = literalStringValue(
         objectProperty(input, "id"),
@@ -2363,6 +2458,148 @@ function definedHttpConnections(
         );
       }
       definitions.push(definition);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return definitions;
+}
+
+const GITHUB_APP_PERMISSION_KEYS = new Set([
+  "actions",
+  "checks",
+  "contents",
+  "issues",
+  "metadata",
+  "pull_requests",
+]);
+
+function definedGitHubConnections(
+  source: string,
+  path: string,
+): GitHubConnectionManifest[] {
+  const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
+  const definitions: GitHubConnectionManifest[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "defineConnection"
+    ) {
+      const input = node.arguments[0];
+      if (!input || !ts.isObjectLiteralExpression(input)) {
+        throw new Error("defineConnection() requires an object literal");
+      }
+      const providerExpression = objectProperty(input, "provider");
+      if (!providerExpression) {
+        ts.forEachChild(node, visit);
+        return;
+      }
+      const id = literalStringValue(
+        objectProperty(input, "id"),
+        "connection id",
+      );
+      for (const property of input.properties) {
+        if (!ts.isPropertyAssignment(property)) {
+          throw new Error(
+            `Connection ${id} cannot use spreads or shorthand properties`,
+          );
+        }
+        const name = staticPropertyName(property.name, `Connection ${id}`);
+        if (name !== "id" && name !== "provider") {
+          throw new Error(
+            `GitHub connection ${id} does not support the ${name} option`,
+          );
+        }
+      }
+      if (
+        !ts.isCallExpression(providerExpression) ||
+        !ts.isIdentifier(providerExpression.expression) ||
+        providerExpression.expression.text !== "githubApp"
+      ) {
+        throw new Error(
+          `Connection ${id} provider must be an inline githubApp() call`,
+        );
+      }
+      const options = literalCallArgument(
+        providerExpression,
+        `Connection ${id} githubApp()`,
+      );
+      if (!options) {
+        throw new Error(`Connection ${id} githubApp() requires permissions`);
+      }
+      for (const property of options.properties) {
+        if (!ts.isPropertyAssignment(property)) {
+          throw new Error(
+            `Connection ${id} githubApp() options must be static`,
+          );
+        }
+        if (
+          staticPropertyName(property.name, `Connection ${id} githubApp()`) !==
+          "permissions"
+        ) {
+          throw new Error(
+            `Connection ${id} githubApp() only supports permissions`,
+          );
+        }
+      }
+      const permissionsExpression = objectProperty(options, "permissions");
+      if (
+        !permissionsExpression ||
+        !ts.isObjectLiteralExpression(permissionsExpression)
+      ) {
+        throw new Error(
+          `Connection ${id} githubApp() permissions must be an inline object literal`,
+        );
+      }
+      const permissions: Record<string, GitHubAppPermission> = {};
+      for (const property of permissionsExpression.properties) {
+        if (!ts.isPropertyAssignment(property)) {
+          throw new Error(
+            `Connection ${id} githubApp() permissions must use literal properties`,
+          );
+        }
+        const name = staticPropertyName(
+          property.name,
+          `Connection ${id} githubApp() permissions`,
+        );
+        if (!GITHUB_APP_PERMISSION_KEYS.has(name)) {
+          throw new Error(
+            `Connection ${id} githubApp() does not support the ${name} permission`,
+          );
+        }
+        const level = literalStringValue(
+          property.initializer,
+          `Connection ${id} githubApp() permission ${name}`,
+        );
+        if (level !== "read" && level !== "write") {
+          throw new Error(
+            `Connection ${id} githubApp() permission ${name} must be "read" or "write"`,
+          );
+        }
+        if (name === "metadata" && level !== "read") {
+          throw new Error(
+            `Connection ${id} githubApp() permission metadata must be "read"`,
+          );
+        }
+        permissions[name] = level;
+      }
+      if (Object.keys(permissions).length === 0) {
+        throw new Error(
+          `Connection ${id} githubApp() requires at least one permission`,
+        );
+      }
+      definitions.push({
+        id,
+        provider: {
+          kind: "github-app",
+          permissions: Object.fromEntries(
+            Object.entries(permissions).sort(([left], [right]) =>
+              left.localeCompare(right),
+            ),
+          ),
+        },
+      });
     }
     ts.forEachChild(node, visit);
   };
@@ -2505,18 +2742,20 @@ function staticModelSelections(
     ts.forEachChild(node, visit);
   };
   visit(file);
-  return selections.filter(
-    (selection, index) =>
-      selections.findIndex(
-        (candidate) =>
-          candidate.provider === selection.provider &&
-          candidate.model === selection.model,
-      ) === index,
-  ).sort((left, right) =>
-    `${left.provider}/${left.model}`.localeCompare(
-      `${right.provider}/${right.model}`,
-    ),
-  );
+  return selections
+    .filter(
+      (selection, index) =>
+        selections.findIndex(
+          (candidate) =>
+            candidate.provider === selection.provider &&
+            candidate.model === selection.model,
+        ) === index,
+    )
+    .sort((left, right) =>
+      `${left.provider}/${left.model}`.localeCompare(
+        `${right.provider}/${right.model}`,
+      ),
+    );
 }
 
 /**
@@ -2550,6 +2789,18 @@ export const useSecret = (value, options = {}) => {
 };
 export const secretHeader = (secret, options = {}) => Object.freeze({ kind: "secret-header", secret, ...options });
 export const bearer = (secret) => secretHeader(secret, { prefix: "Bearer " });
+export const githubApp = (options) => {
+  const entries = Object.entries(options?.permissions || {});
+  if (!entries.length) throw new Error("githubApp() requires at least one permission");
+  const permissions = {};
+  for (const [name, level] of entries) {
+    if (!["actions", "checks", "contents", "issues", "metadata", "pull_requests"].includes(name)) throw new Error("githubApp() does not support the " + name + " permission");
+    if (level !== "read" && level !== "write") throw new Error("githubApp() permission " + name + " must be read or write");
+    if (name === "metadata" && level !== "read") throw new Error("githubApp() permission metadata must be read");
+    permissions[name] = level;
+  }
+  return Object.freeze({ kind: "github-app", permissions: Object.freeze(permissions) });
+};
 export const callService = async (request) => {
   const base = globalThis.process?.env?.OPENCOMPUTER_CONNECTIONS_URL;
   const token = globalThis.process?.env?.OPENCOMPUTER_CONNECTION_TOKEN;
@@ -2605,6 +2856,10 @@ export const listServices = async (options = {}) => {
 
 export const defineConnection = (input) => {
   const connectionId = id(input.id, "defineConnection");
+  if (input.provider) {
+    if (input.provider.kind !== "github-app") throw new Error("defineConnection() received an unsupported provider");
+    return Object.freeze({ kind: "connection", id: connectionId, provider: input.provider });
+  }
   const origin = new URL(input.origin);
   if (origin.protocol !== "https:" || origin.pathname !== "/") throw new Error("Connection origins must be HTTPS origins without a path");
   for (const [name, value] of Object.entries(input.headers || {})) {
@@ -2742,6 +2997,7 @@ export const useInput = () => hooks().useInput();
 export const useCurrentInput = useInput;
 export const useModel = (model) => hooks().useModel(model);
 export const useTool = (tool) => hooks().useTool(tool);
+export const useConnection = (connection) => hooks().useConnection(connection);
 export const useService = (service) => hooks().useService?.(service);
 export const useSubagent = (agent) => hooks().useSubagent(agent);
 export const useMcpServer = (server) => hooks().useMcpServer(server);
@@ -2788,10 +3044,10 @@ async function bundleAgentSourceModules(
       {
         name: "opencomputer-agent-runtime",
         setup(build) {
-          build.onResolve(
-            { filter: /^@opencomputer\/agent$/ },
-            () => ({ path: "api", namespace: "opencomputer-agent-runtime" }),
-          );
+          build.onResolve({ filter: /^@opencomputer\/agent$/ }, () => ({
+            path: "api",
+            namespace: "opencomputer-agent-runtime",
+          }));
           build.onLoad(
             { filter: /^api$/, namespace: "opencomputer-agent-runtime" },
             () => ({ contents: agentApiRuntimeSource(), loader: "js" }),
@@ -2982,9 +3238,13 @@ the product or support surface presented to users.
   const httpConnections = sourceModules.flatMap((module) =>
     definedHttpConnections(module.source, module.path),
   );
-  const duplicateConnection = httpConnections.find(
+  const githubConnections = sourceModules.flatMap((module) =>
+    definedGitHubConnections(module.source, module.path),
+  );
+  const allConnections = [...httpConnections, ...githubConnections];
+  const duplicateConnection = allConnections.find(
     (connection, index) =>
-      httpConnections.findIndex(
+      allConnections.findIndex(
         (candidate) => candidate.id === connection.id,
       ) !== index,
   );
@@ -3062,15 +3322,16 @@ the product or support surface presented to users.
         toolModules: toolModules.sort(),
         subagents: literalHookIds(agentSource, "useSubagent"),
         // Declared HTTP connections AND managed-service grants: the platform
-        // reads one list, and a google grant absent from it makes every
+        // reads one list, and a provider grant absent from it makes every
         // connected mailbox invisible to listServices().
         connections: [
           ...new Set([
-            ...httpConnections.map((connection) => connection.id),
+            ...allConnections.map((connection) => connection.id),
             ...declaredServiceProviders(agentSource),
           ]),
         ].sort(),
         httpConnections,
+        githubConnections,
         mcpServers: [
           ...new Set([
             ...mcpServerDefinitions.map((server) => server.id),
@@ -3120,11 +3381,13 @@ export async function buildAgentArtifact(
   ) as {
     connections?: string[];
     httpConnections?: HttpConnectionManifest[];
+    githubConnections?: GitHubConnectionManifest[];
     memory?: MemoryDeclaration[];
     models?: Array<{ provider: string; model: string }>;
   };
   const connections = [...new Set(reactive.connections ?? [])].sort();
   const httpConnections = reactive.httpConnections ?? [];
+  const githubConnections = reactive.githubConnections ?? [];
   const memory = reactive.memory ?? [];
   const models = reactive.models ?? [];
   const body = Buffer.from(
@@ -3140,6 +3403,7 @@ export async function buildAgentArtifact(
     channels: [],
     connections,
     httpConnections,
+    githubConnections,
     memory,
     models,
     body,
