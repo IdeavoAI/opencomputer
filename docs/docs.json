@@ -50,6 +50,7 @@
               "agents/channels",
               "agents/outboxes",
               "agents/secrets",
+              "agents/services",
               "agents/byok",
               "agents/deployments"
             ]

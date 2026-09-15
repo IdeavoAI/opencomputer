@@ -1,0 +1,168 @@
+---
+title: "Connected services"
+description: "Call Gmail, Calendar, Drive, Sheets and GitHub with a credential the platform holds and refreshes"
+---
+
+Some integrations cannot be a secret you set. An OAuth credential is
+short-lived, belongs to a person rather than to your project, and has to be
+refreshed. So the platform holds it: someone connects their account once, and
+your agent asks for a service by name instead of a URL and a header.
+
+```tsx
+import { callService, defineTool, useService } from "@opencomputer/agent";
+
+export const unread = defineTool({
+  name: "unread_reports",
+  description: "Count unread messages labelled triage",
+  async run({ signal }) {
+    const response = await callService({
+      service: "gmail",
+      path: "/gmail/v1/users/me/messages?q=label:triage+is:unread",
+      signal,
+    });
+    const { messages = [] } = (await response.json()) as {
+      messages?: unknown[];
+    };
+    return { waiting: messages.length };
+  },
+});
+```
+
+The access token is never in your runtime. There is no token to log, leak, or
+hand to a model — which matters most for agents that read documents written by
+other people.
+
+<Note>
+This is the other half of [declared connections](/agents/secrets). Use
+`defineConnection` when **you** hold the credential and it is a static secret
+the egress proxy attaches. Use `callService` when the **platform** holds it and
+has to refresh it.
+</Note>
+
+## Declare what you use
+
+```tsx
+export default function Agent() {
+  useService("gmail");
+  useTool(unread);
+  return "Answer questions about the triage queue.";
+}
+```
+
+`useService` takes a literal string, read out of your source at build time. It
+does two things:
+
+- It puts the service in the capability manifest, so what your agent can reach
+  is reviewable without running it.
+- It asks the deployment for that grant. Without it, `listServices()` returns
+  nothing, because the platform only reports accounts your deployment declared.
+
+| Service | Reaches | Grant |
+| --- | --- | --- |
+| `gmail` | `gmail.googleapis.com` | Google |
+| `calendar` | `www.googleapis.com` | Google |
+| `drive` | `www.googleapis.com` | Google |
+| `sheets` | `www.googleapis.com` | Google |
+| `github` | GitHub's API | GitHub |
+
+The four Google services are one consent. GitHub is its own.
+
+## Making a request
+
+`callService` takes a service and an absolute path on it, and returns the
+service's own response — status, headers and body — as `fetch` would.
+
+```tsx
+const response = await callService({
+  service: "gmail",
+  label: "support",            // which connected account, when there are several
+  method: "POST",
+  path: "/gmail/v1/users/me/messages/abc/modify",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ removeLabelIds: ["UNREAD"] }),
+  signal,
+});
+```
+
+A failure from the service arrives as a status, not an exception, so a `403`
+for a missing scope stays distinguishable from a `404` for a deleted message.
+Check `response.ok` and read the body — both are worth surfacing, because a
+scope problem is for an operator to fix and a model told only "it failed" will
+retry forever.
+
+It throws only for things that are wrong before a request is made: a path that
+is not absolute, a missing service name, or running somewhere the platform
+provides no connection layer at all.
+
+## Several accounts
+
+An agent that sweeps more than one mailbox cannot hold their names in its
+source: accounts are connected and disconnected long after the artifact is
+built. Ask for them instead.
+
+```tsx
+const mailboxes = await listServices({ provider: "google" });
+
+for (const mailbox of mailboxes) {
+  const response = await callService({
+    service: "gmail",
+    label: mailbox.label,
+    path: "/gmail/v1/users/me/messages?q=is:unread",
+  });
+  // mailbox.displayName is the account's own address.
+}
+```
+
+| Field | What it is |
+| --- | --- |
+| `label` | The alias it was connected under. Pass this as `label`. |
+| `displayName` | Who the account belongs to, e.g. the mailbox address |
+| `provider` | `google` or `github` |
+| `scopes` | What was granted at consent |
+| `status` | `connected` accounts are usable |
+
+By default only connected accounts are returned; pass `connectedOnly: false`
+to see pending ones too. Connecting a new account needs no redeploy — the next
+run sees it, and a consent finished seconds ago is reconciled before the list
+is answered.
+
+## Connecting an account
+
+Each account is connected under a **label**, which is how your agent addresses
+it. Mint a link and give it to the person whose account it is:
+
+```bash
+curl -X POST "$OC_API_URL/api/managed-agents/connections/google/link" \
+  -H "x-api-key: $OPENCOMPUTER_API_KEY" \
+  -H "content-type: application/json" \
+  -d '{"service":"gmail","label":"support"}'
+```
+
+The response carries an `authorizationUrl`. Whoever opens it consents with
+their own account, and it is connected under that label — they never sign in
+to OpenComputer. Omit `label` for `default`.
+
+```bash
+# What is connected
+curl "$OC_API_URL/api/managed-agents/connections" -H "x-api-key: $OPENCOMPUTER_API_KEY"
+
+# Disconnect one
+curl -X DELETE "$OC_API_URL/api/managed-agents/connections/google?service=gmail&connectionId=$ID" \
+  -H "x-api-key: $OPENCOMPUTER_API_KEY"
+```
+
+An agent asked for a service with nothing connected gets a `404` naming the
+service and label, so the failure says what to do about it rather than looking
+like a bug in your tool.
+
+## What you can and cannot do
+
+What a request is allowed to do is fixed by the consent that created the
+connection, not by your code. If a call fails with `403`, the account was
+connected with narrower access than the call needs, and the fix is to
+reconnect it — nothing in the agent can widen it. Read `scopes` from
+`listServices()` to see what was actually granted.
+
+The platform does not proxy arbitrary hosts. A service reaches its own API and
+nothing else; for anything outside that list, declare an
+[HTTP connection](/agents/secrets) instead.

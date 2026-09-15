@@ -9,6 +9,7 @@ the narrowest capability that fits the job.
 | Capability | Use it for | Where the work happens | How it is attached |
 | --- | --- | --- | --- |
 | Code-defined tool | One typed operation you implement | Your TypeScript `run()` function | `useTool(tool)` |
+| Connected service | Gmail, Calendar, Drive, Sheets or GitHub, on someone's connected account | OpenComputer attaches and refreshes the credential | `useService("gmail")`, then `callService()` in a tool |
 | MCP server | A service that already publishes a collection of tools | The remote MCP server | `useMcpServer(server)` |
 | Skill | A reusable procedure, checklist, or supporting files | The agent follows the loaded instructions | Place it under `skills/` |
 | Subagent | Delegating a focused task to another project agent | The delegated agent | `useSubagent(agentId)` |
