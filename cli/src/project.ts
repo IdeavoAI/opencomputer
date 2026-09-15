@@ -41,6 +41,7 @@ export interface BuiltAgentArtifact {
   connections: string[];
   httpConnections: HttpConnectionManifest[];
   memory: MemoryDeclaration[];
+  models: Array<{ provider: string; model: string }>;
   body: Buffer;
   digest: string;
   elapsedMs: number;
@@ -796,6 +797,41 @@ from \`defineConnection()\` declarations.
 function literalHookIds(source: string, hook: string): string[] {
   const pattern = new RegExp(`\\b${hook}\\(\\s*["']([^"']+)["']`, "g");
   return [...source.matchAll(pattern)].map((match) => match[1]!).sort();
+}
+
+/**
+ * The grant a managed service belongs to.
+ *
+ * The platform gates a session's connections on the PROVIDER, not the service:
+ * gmail, calendar, drive and sheets are one Google grant, and github is its
+ * own. An agent declares the service it uses, because that is what it calls;
+ * the deployment records the provider, because that is what was consented to.
+ */
+const MANAGED_SERVICE_PROVIDERS: Readonly<Record<string, string>> = {
+  gmail: "google",
+  google: "google",
+  calendar: "google",
+  drive: "google",
+  sheets: "google",
+  github: "github",
+};
+
+function declaredServiceProviders(agentSource: string): string[] {
+  const declared = literalHookIds(agentSource, "useService");
+  const unknown = declared.find(
+    (service) => !MANAGED_SERVICE_PROVIDERS[service.trim().toLowerCase()],
+  );
+  if (unknown) {
+    throw new Error(
+      `useService(${JSON.stringify(unknown)}) names no managed service; ` +
+        `expected one of ${Object.keys(MANAGED_SERVICE_PROVIDERS).join(", ")}`,
+    );
+  }
+  return [
+    ...new Set(
+      declared.map((service) => MANAGED_SERVICE_PROVIDERS[service.trim().toLowerCase()]!),
+    ),
+  ];
 }
 
 function definedConnectionBindings(
@@ -2411,6 +2447,44 @@ function staticModelSelections(
     ts.ScriptKind.TS,
   );
   const selections: Array<{ provider: string; model: string }> = [];
+  const selectionValues = (
+    value: ts.Expression,
+  ): Array<{ provider: string; model: string }> | undefined => {
+    if (ts.isStringLiteralLike(value)) {
+      return [{ provider: "openrouter", model: value.text }];
+    }
+    if (ts.isObjectLiteralExpression(value)) {
+      let provider: string | undefined;
+      let model: string | undefined;
+      for (const property of value.properties) {
+        if (!ts.isPropertyAssignment(property)) continue;
+        const name = ts.isIdentifier(property.name)
+          ? property.name.text
+          : ts.isStringLiteralLike(property.name)
+            ? property.name.text
+            : undefined;
+        if (!name || !ts.isStringLiteralLike(property.initializer)) continue;
+        if (name === "provider") provider = property.initializer.text;
+        if (name === "model") model = property.initializer.text;
+      }
+      return provider && model ? [{ provider, model }] : undefined;
+    }
+    if (ts.isConditionalExpression(value)) {
+      const whenTrue = selectionValues(value.whenTrue);
+      const whenFalse = selectionValues(value.whenFalse);
+      return whenTrue && whenFalse ? [...whenTrue, ...whenFalse] : undefined;
+    }
+    if (
+      ts.isParenthesizedExpression(value) ||
+      ts.isAsExpression(value) ||
+      ts.isTypeAssertionExpression(value) ||
+      ts.isSatisfiesExpression(value) ||
+      ts.isNonNullExpression(value)
+    ) {
+      return selectionValues(value.expression);
+    }
+    return undefined;
+  };
   const visit = (node: ts.Node): void => {
     if (
       ts.isCallExpression(node) &&
@@ -2418,23 +2492,14 @@ function staticModelSelections(
       node.expression.text === "useModel"
     ) {
       const value = node.arguments[0];
-      if (value && ts.isStringLiteralLike(value)) {
-        selections.push({ provider: "openrouter", model: value.text });
-      } else if (value && ts.isObjectLiteralExpression(value)) {
-        let provider: string | undefined;
-        let model: string | undefined;
-        for (const property of value.properties) {
-          if (!ts.isPropertyAssignment(property)) continue;
-          const name = ts.isIdentifier(property.name)
-            ? property.name.text
-            : ts.isStringLiteralLike(property.name)
-              ? property.name.text
-              : undefined;
-          if (!name || !ts.isStringLiteralLike(property.initializer)) continue;
-          if (name === "provider") provider = property.initializer.text;
-          if (name === "model") model = property.initializer.text;
+      if (value) {
+        const values = selectionValues(value);
+        if (!values) {
+          throw new Error(
+            "useModel() must use a literal model selection or a conditional whose branches are literal selections",
+          );
         }
-        if (provider && model) selections.push({ provider, model });
+        selections.push(...values);
       }
     }
     ts.forEachChild(node, visit);
@@ -2447,6 +2512,10 @@ function staticModelSelections(
           candidate.provider === selection.provider &&
           candidate.model === selection.model,
       ) === index,
+  ).sort((left, right) =>
+    `${left.provider}/${left.model}`.localeCompare(
+      `${right.provider}/${right.model}`,
+    ),
   );
 }
 
@@ -2481,6 +2550,59 @@ export const useSecret = (value, options = {}) => {
 };
 export const secretHeader = (secret, options = {}) => Object.freeze({ kind: "secret-header", secret, ...options });
 export const bearer = (secret) => secretHeader(secret, { prefix: "Bearer " });
+export const callService = async (request) => {
+  const base = globalThis.process?.env?.OPENCOMPUTER_CONNECTIONS_URL;
+  const token = globalThis.process?.env?.OPENCOMPUTER_CONNECTION_TOKEN;
+  if (!base || !token) throw new Error("OpenComputer managed connections are unavailable");
+  if (!request?.path?.startsWith("/")) throw new Error("Service requests require an absolute path");
+  const service = String(request.service ?? "").trim().toLowerCase();
+  if (!service) throw new Error("A service request needs a service");
+  const provider = service === "github" ? "github" : "google";
+  const root = base.endsWith("/") ? base.slice(0, -1) : base;
+  const response = await fetch(root + "/" + provider + "/fetch", {
+    method: "POST",
+    headers: { authorization: "Bearer " + token, "content-type": "application/json" },
+    body: JSON.stringify({
+      service,
+      ...(request.label ? { label: request.label } : {}),
+      method: (request.method ?? "GET").toUpperCase(),
+      path: request.path,
+      ...(request.headers ? { headers: request.headers } : {}),
+      ...(request.body === undefined ? {} : { body: request.body }),
+    }),
+    ...(request.signal ? { signal: request.signal } : {}),
+  });
+  // A managed connection answers with an envelope wrapped in a 200. Open it so
+  // callers see the service's real status instead of the proxy's.
+  if (!response.ok) return response;
+  const envelope = await response.clone().json().catch(() => null);
+  if (!envelope || typeof envelope.status !== "number" || typeof envelope.body !== "string") return response;
+  const headers = {};
+  for (const [name, value] of Object.entries(envelope.headers || {})) {
+    if (typeof value === "string") headers[name] = value;
+  }
+  return new Response(envelope.body, { status: envelope.status, headers });
+};
+
+export const listServices = async (options = {}) => {
+  const base = globalThis.process?.env?.OPENCOMPUTER_CONNECTIONS_URL;
+  const token = globalThis.process?.env?.OPENCOMPUTER_CONNECTION_TOKEN;
+  if (!base || !token) throw new Error("OpenComputer managed connections are unavailable");
+  const root = base.endsWith("/") ? base.slice(0, -1) : base;
+  const response = await fetch(root + "/opencomputer/fetch", {
+    method: "POST",
+    headers: { authorization: "Bearer " + token, "content-type": "application/json" },
+    body: JSON.stringify({ action: "list" }),
+    ...(options.signal ? { signal: options.signal } : {}),
+  });
+  if (!response.ok) throw new Error("Listing connected services failed: " + response.status + " " + (await response.text()).slice(0, 300));
+  const body = await response.json();
+  const provider = options.provider ? String(options.provider).trim().toLowerCase() : "";
+  return (body.connections ?? []).filter((connection) =>
+    (!provider || String(connection.provider ?? "").toLowerCase() === provider) &&
+    (options.connectedOnly === false || connection.status === "connected"));
+};
+
 export const defineConnection = (input) => {
   const connectionId = id(input.id, "defineConnection");
   const origin = new URL(input.origin);
@@ -2620,6 +2742,7 @@ export const useInput = () => hooks().useInput();
 export const useCurrentInput = useInput;
 export const useModel = (model) => hooks().useModel(model);
 export const useTool = (tool) => hooks().useTool(tool);
+export const useService = (service) => hooks().useService?.(service);
 export const useSubagent = (agent) => hooks().useSubagent(agent);
 export const useMcpServer = (server) => hooks().useMcpServer(server);
 export const useSessionData = (key) => hooks().useSessionData(key);
@@ -2938,7 +3061,15 @@ the product or support surface presented to users.
         gatedTools: [...gatedTools].sort(),
         toolModules: toolModules.sort(),
         subagents: literalHookIds(agentSource, "useSubagent"),
-        connections: httpConnections.map((connection) => connection.id).sort(),
+        // Declared HTTP connections AND managed-service grants: the platform
+        // reads one list, and a google grant absent from it makes every
+        // connected mailbox invisible to listServices().
+        connections: [
+          ...new Set([
+            ...httpConnections.map((connection) => connection.id),
+            ...declaredServiceProviders(agentSource),
+          ]),
+        ].sort(),
         httpConnections,
         mcpServers: [
           ...new Set([
@@ -2990,10 +3121,12 @@ export async function buildAgentArtifact(
     connections?: string[];
     httpConnections?: HttpConnectionManifest[];
     memory?: MemoryDeclaration[];
+    models?: Array<{ provider: string; model: string }>;
   };
   const connections = [...new Set(reactive.connections ?? [])].sort();
   const httpConnections = reactive.httpConnections ?? [];
   const memory = reactive.memory ?? [];
+  const models = reactive.models ?? [];
   const body = Buffer.from(
     JSON.stringify({
       version: 1,
@@ -3008,6 +3141,7 @@ export async function buildAgentArtifact(
     connections,
     httpConnections,
     memory,
+    models,
     body,
     digest: createHash("sha256").update(body).digest("hex"),
     elapsedMs: Math.round(performance.now() - startedAt),
