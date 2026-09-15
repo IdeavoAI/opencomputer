@@ -22,39 +22,32 @@ Use `callService` when the **platform** holds it and has to refresh it.
 Do this first — the code below returns `404` until an account exists.
 
 Each account is connected under a **label**, which is how your agent addresses
-it. Mint a link and give it to the person whose account it is:
+it.
 
 ```bash
-export OC_API_URL=https://app.opencomputer.dev
-
-curl -X POST "$OC_API_URL/api/managed-agents/connections/google/link" \
-  -H "x-api-key: $OPENCOMPUTER_API_KEY" \
-  -H "content-type: application/json" \
-  -d '{"service":"gmail","label":"support"}'
+opencomputer connection add gmail --alias support
 ```
 
-The response carries an `authorizationUrl`. Whoever opens it consents with
-their own account and it is connected under that label — they never sign in to
-OpenComputer.
+That prints a link. Whoever opens it consents with their own account and it is
+connected under that label — they never sign in to OpenComputer, and no
+credential passes through the CLI. Send the link to the person whose account it
+is.
 
-Omitting `label` here connects it as `default`, which is the label the examples
+Omitting `--alias` connects it as `default`, which is the label the examples
 below assume. **`default` is a literal name, not a fallback**: if you connect an
 account as `support`, a call that passes no `label` looks for one called
 `default` and gets a `404` even though `support` is the only account you have.
 
 ```bash
-# What is connected
-curl "$OC_API_URL/api/managed-agents/connections" -H "x-api-key: $OPENCOMPUTER_API_KEY"
+opencomputer connection list
+# support              google   connected    ops@example.com
 
-# Disconnect one, by the id from the list above
-curl -X DELETE "$OC_API_URL/api/managed-agents/connections/google?service=gmail&connectionId=$ID" \
-  -H "x-api-key: $OPENCOMPUTER_API_KEY"
+opencomputer connection remove support
 ```
 
-<Warning>
-There is no `opencomputer connection` CLI command. If an error message tells
-you to run one, it is wrong — use the API above.
-</Warning>
+Each of these has a `--json` form, and the same routes are available directly
+under `/api/managed-agents/connections` if you would rather script against the
+API than shell out.
 
 ## 2. Declare the service
 
@@ -208,7 +201,7 @@ collections rather than asking for them in one call.
 
 | You see | It means | Do this |
 | --- | --- | --- |
-| `404 connection_not_found` | No account under **that label** — often a call with no `label` while the account was connected as something else | Pass the matching `label`, or connect one (step 1) |
+| `404 connection_not_found` | No account under **that label** — often a call with no `label` while the account was connected as something else | `opencomputer connection list` to see the labels, then pass the matching one — or connect an account |
 | `409 connection_alias_required` | Several accounts connected, no `label` given | Pass `label`; the message lists them |
 | `403` from the service | The consent is narrower than the call needs | Reconnect the account with wider access |
 | `listServices()` returns `[]` | The service is not declared | Add `useService("gmail")` |
