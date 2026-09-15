@@ -2270,6 +2270,182 @@ describe("managed agents proxy", () => {
     });
   });
 
+  // Review finding 8 (2026-09-15): the detail route used to strip
+  // reserved-looking keys from every nested object, so an application result
+  // that happened to contain userId, a nested runtimeId or artifact came back
+  // intact from the list row and corrupted from the same session's detail.
+  it("returns the application result identical from the list row and the detail, with the platform envelope stripped", async () => {
+    const result = {
+      turnId: "turn-1",
+      callId: "call-1",
+      reportedAt: "2026-09-15T00:01:00.000Z",
+      data: {
+        userId: "u-42",
+        pr: { url: "https://github.com/acme/web/pull/12", runtimeId: "r-9" },
+        artifact: "build-12",
+        checks: [{ name: "lint", userId: "x" }],
+      },
+    };
+    const row = {
+      id: "session-1",
+      projectId: "prj_test",
+      agentId: "worker",
+      deploymentId: "worker:digest",
+      environment: "development",
+      source: "api",
+      status: "idle",
+      labels: { user_id: "u-42", topic: "t" },
+      createdAt: "2026-09-15T00:00:00.000Z",
+      updatedAt: "2026-09-15T00:01:00.000Z",
+      revision: 3,
+      activity: { activeTurnId: null, queued: 0, lastSettledTurn: null },
+      result,
+      accountId: "org_test",
+      userId: "user_private",
+      runtimeId: "internal-runtime",
+    };
+    const snapshot = {
+      id: "session-1",
+      accountId: "org_test",
+      userId: "user_private",
+      agentId: "worker",
+      deploymentId: "worker:digest",
+      projectId: "prj_test",
+      executionMode: "workerd",
+      source: "api",
+      status: "idle",
+      labels: { user_id: "u-42", topic: "t" },
+      revision: 3,
+      result,
+      runtimeId: "internal-runtime",
+      runtimeEpoch: 4,
+      runtimeToken: "internal-runtime-token",
+      microvmId: "internal-vm",
+      microvmState: "suspended",
+      createdAt: "2026-09-15T00:00:00.000Z",
+      updatedAt: "2026-09-15T00:01:00.000Z",
+      environment: "development",
+      turns: [
+        {
+          id: "turn-1",
+          input: "Fix the login page",
+          mode: "queue",
+          status: "completed",
+          payload: { userId: "u-42", repo: "acme/web" },
+          createdAt: "2026-09-15T00:00:00.000Z",
+          updatedAt: "2026-09-15T00:01:00.000Z",
+        },
+      ],
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: URL | string) =>
+        String(input).endsWith("/v1/sessions")
+          ? Response.json({ sessions: [row], nextCursor: null })
+          : Response.json(snapshot),
+      ),
+    );
+    const env = {
+      OC_MANAGED_AGENTS_SECRET: "test-secret",
+      MANAGED_AGENTS_API_URL: "https://managedagents.test",
+    };
+    const caller = { orgID: "org_test", userID: "user_test" };
+
+    const list = await proxyManagedAgents(
+      new Request("https://app.opencomputer.dev/api/managed-agents/sessions"),
+      env,
+      caller,
+      "/api/managed-agents",
+    );
+    const detail = await proxyManagedAgents(
+      new Request("https://app.opencomputer.dev/api/managed-agents/sessions/session-1"),
+      env,
+      caller,
+      "/api/managed-agents",
+    );
+    expect(list.status).toBe(200);
+    expect(detail.status).toBe(200);
+    const listBody = (await list.json()) as { sessions: Array<Record<string, unknown>> };
+    const detailBody = (await detail.json()) as Record<string, unknown>;
+
+    // Application data is opaque: the same value from both routes.
+    expect(listBody.sessions[0].result).toEqual(result);
+    expect(detailBody.result).toEqual(result);
+    expect(detailBody.result).toEqual(listBody.sessions[0].result);
+    expect(detailBody.labels).toEqual({ user_id: "u-42", topic: "t" });
+    expect((detailBody.turns as Array<Record<string, unknown>>)[0].payload).toEqual({
+      userId: "u-42",
+      repo: "acme/web",
+    });
+    // The platform envelope is gone from the top level, and the fields the
+    // dashboard and CLI read are still there.
+    expect(detailBody).not.toHaveProperty("accountId");
+    expect(detailBody).not.toHaveProperty("userId");
+    expect(detailBody).not.toHaveProperty("runtimeId");
+    expect(detailBody).not.toHaveProperty("runtimeEpoch");
+    expect(detailBody).not.toHaveProperty("runtimeToken");
+    expect(detailBody).not.toHaveProperty("microvmId");
+    expect(detailBody.executionMode).toBe("workerd");
+    expect(detailBody.microvmState).toBe("suspended");
+    expect(JSON.stringify(detailBody)).not.toMatch(
+      /org_test|user_private|internal-runtime|internal-vm|runtimeEpoch/,
+    );
+  });
+
+  it("keeps application JSON inside tool outputs on public events", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          events: [
+            {
+              id: "event-2",
+              seq: 2,
+              timestamp: "2026-09-15T00:00:01.000Z",
+              sessionId: "session-1",
+              turnId: "turn-1",
+              type: "tool.completed",
+              data: {
+                tool: "report",
+                callId: "call-1",
+                title: "report",
+                output: { userId: "u-42", pr: { runtimeId: "r-9" }, artifact: "build-12" },
+                result: true,
+                runtimeId: "internal-runtime",
+              },
+            },
+          ],
+        }),
+      ),
+    );
+    const response = await proxyManagedAgents(
+      new Request(
+        "https://app.opencomputer.dev/api/managed-agents/sessions/session-1/events?after=0",
+      ),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+      },
+      { orgID: "org_test", userID: "user_test" },
+      "/api/managed-agents",
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      events: [
+        expect.objectContaining({
+          type: "tool.completed",
+          data: {
+            tool: "report",
+            callId: "call-1",
+            title: "report",
+            output: { userId: "u-42", pr: { runtimeId: "r-9" }, artifact: "build-12" },
+            result: true,
+          },
+        }),
+      ],
+    });
+  });
+
   it("interrupts a session's running turn and returns the sanitized snapshot", async () => {
     const fetchSpy = vi.fn(async () =>
       Response.json({

@@ -750,8 +750,8 @@ function publicDelivery(value: unknown): Record<string, unknown> {
 
 /**
  * Session labels are the owner's own strings under the owner's own keys.
- * They are reattached after the private-key strip, which would otherwise
- * drop a label the owner happened to call `user_id` or `runtime_id`.
+ * They are read from the source, never from a stripped copy, so a label the
+ * owner happened to call `user_id` or `runtime_id` is kept.
  */
 function ownerLabels(source: Record<string, unknown>): Record<string, string> {
   const labels = record(source.labels) ?? {};
@@ -762,23 +762,77 @@ function ownerLabels(source: Record<string, unknown>): Record<string, string> {
   );
 }
 
-function publicSessionSnapshot(value: unknown): unknown {
-  const source = record(value);
-  const session = record(stripPrivateValues(value));
-  if (!session || !source) return session ?? value;
-  const labelled = "labels" in source ? { ...session, labels: ownerLabels(source) } : session;
-  if (!Array.isArray(labelled.turns)) return labelled;
+/**
+ * The session's result as documented: the call that reported it and its
+ * `data` verbatim. `data` is the application's own JSON, so nothing inside
+ * it is inspected or renamed; `null` when no turn has reported one.
+ */
+function publicSessionResult(value: unknown): unknown {
+  const result = record(value);
+  if (!result) return null;
   return {
-    ...labelled,
-    turns: labelled.turns.map((entry) => {
-      const turn = record(entry);
-      if (!turn || !Array.isArray(turn.deliveries)) return entry;
-      return { ...turn, deliveries: turn.deliveries.map(publicDelivery) };
-    }),
+    turnId: result.turnId,
+    callId: result.callId,
+    reportedAt: result.reportedAt,
+    data: result.data,
   };
 }
 
-/** One list row as documented: nothing private is in it, and the labels are the owner's. */
+/**
+ * Platform-internal fields of the session envelope that no public route
+ * documents: the runtime generation counter and the name of the memory
+ * object the bindings were admitted against. Dropped by position, since the
+ * name filter is for the fields it lists.
+ */
+const PRIVATE_SESSION_FIELDS = new Set(["runtimeEpoch", "memoryObject"]);
+
+/**
+ * One turn of the snapshot. `payload` is the caller's own JSON and passes
+ * through untouched; `deliveries` are platform records with their own public
+ * shape; the rest of the turn is platform envelope and keeps the name strip.
+ */
+function publicTurn(entry: unknown): unknown {
+  const turn = record(entry);
+  if (!turn) return entry;
+  return Object.fromEntries(
+    Object.entries(turn).flatMap(([key, child]): Array<[string, unknown]> => {
+      if (key === "payload") return [[key, child]];
+      if (key === "deliveries") {
+        return [[key, Array.isArray(child) ? child.map(publicDelivery) : child]];
+      }
+      if (PRIVATE_EVENT_KEYS.has(key)) return [];
+      return [[key, stripPrivateValues(child)]];
+    }),
+  );
+}
+
+/**
+ * The public session. Redaction is by position: the platform envelope (the
+ * session's own fields, memory bindings, turn records, deliveries) is
+ * stripped of private fields, while the positions that hold application
+ * data, `labels`, `result.data` and each turn's `payload`, are copied
+ * verbatim. A recursive strip over the whole object used to remove keys
+ * such as `userId` or `runtimeId` from inside an application's result,
+ * which the list row (assembled separately) kept, so the same session
+ * answered two routes with two different results.
+ */
+function publicSessionSnapshot(value: unknown): unknown {
+  const source = record(value);
+  if (!source) return value;
+  return Object.fromEntries(
+    Object.entries(source).flatMap(([key, child]): Array<[string, unknown]> => {
+      if (key === "labels") return [[key, ownerLabels(source)]];
+      if (key === "result") return [[key, publicSessionResult(child)]];
+      if (key === "turns") {
+        return [[key, Array.isArray(child) ? child.map(publicTurn) : stripPrivateValues(child)]];
+      }
+      if (PRIVATE_EVENT_KEYS.has(key) || PRIVATE_SESSION_FIELDS.has(key)) return [];
+      return [[key, stripPrivateValues(child)]];
+    }),
+  );
+}
+
+/** One list row as documented: nothing private is in it, and the labels and result are the owner's. */
 function publicSessionSummary(value: unknown): unknown {
   const source = record(value);
   const row = record(stripPrivateValues(value));
@@ -796,7 +850,7 @@ function publicSessionSummary(value: unknown): unknown {
     updatedAt: row.updatedAt,
     revision: row.revision,
     activity: row.activity,
-    result: source.result ?? null,
+    result: publicSessionResult(source.result),
   };
 }
 
