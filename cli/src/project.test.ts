@@ -1512,6 +1512,133 @@ test("the runtime shim refuses a tool module whose result metadata disagrees wit
   }
 });
 
+// One authored result schema: the review found the inline-only rule refused
+// a local const used for both input and output, which forced a second
+// hand-maintained copy. A const object literal in the same module, or a
+// named import of one from a module inside the agent directory, is read
+// without evaluation and pinned exactly as written.
+test("the compiler reads the result tool's output schema from a const in the module or an imported const", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-result-schema-"));
+  const root = resolve(parent, "app");
+  const schema = {
+    type: "object",
+    properties: { branch: { type: "string" }, checks: { type: "array", items: { type: "string" } } },
+    required: ["branch"],
+    additionalProperties: false,
+  };
+  const manifestOf = async (agentRoot: string) =>
+    JSON.parse(
+      await readFile(resolve(agentRoot, ".opencomputer", "runtime", ".opencomputer", "reactive.json"), "utf8"),
+    ) as { resultTool?: { id: string; output: Record<string, unknown> } };
+  try {
+    const initialized = await initializeAgentProject(root);
+    await mkdir(resolve(initialized.agentRoot, "tools"), { recursive: true });
+    // Same module, `as const`, one schema for input and output.
+    await writeFile(
+      resolve(initialized.agentRoot, "tools", "report.ts"),
+      `import { defineTool } from "@opencomputer/agent";
+
+const reportSchema = ${JSON.stringify(schema, null, 2)} as const;
+
+export const report = defineTool({
+  name: "report",
+  description: "Report the branch",
+  input: reportSchema,
+  output: reportSchema,
+  result: true,
+  async run({ input }) {
+    return { branch: String(input.branch) };
+  },
+});
+`,
+    );
+    await prepareAgent(initialized.agentRoot);
+    assert.deepEqual((await manifestOf(initialized.agentRoot)).resultTool, { id: "report", output: schema });
+
+    // Imported from a module of the agent's own, under a different local name.
+    await writeFile(
+      resolve(initialized.agentRoot, "schemas.ts"),
+      `export const reportSchema = ${JSON.stringify(schema)} satisfies Record<string, unknown>;\n`,
+    );
+    await writeFile(
+      resolve(initialized.agentRoot, "tools", "report.ts"),
+      `import { defineTool } from "@opencomputer/agent";
+import { reportSchema as output } from "../schemas.js";
+
+export const report = defineTool({
+  name: "report",
+  description: "Report the branch",
+  input: output,
+  output,
+  result: true,
+  async run({ input }) {
+    return { branch: String(input.branch) };
+  },
+});
+`,
+    );
+    await prepareAgent(initialized.agentRoot);
+    assert.deepEqual((await manifestOf(initialized.agentRoot)).resultTool, { id: "report", output: schema });
+
+    // A const exported under another name, read through the export list.
+    await writeFile(
+      resolve(initialized.agentRoot, "schemas.ts"),
+      `const base = ${JSON.stringify(schema)} as const;\nexport { base as reportSchema };\n`,
+    );
+    await prepareAgent(initialized.agentRoot);
+    assert.deepEqual((await manifestOf(initialized.agentRoot)).resultTool, { id: "report", output: schema });
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("the compiler names the unsupported schema form instead of guessing", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-result-schema-"));
+  const root = resolve(parent, "app");
+  const tool = (imports: string, output: string) => `import { defineTool } from "@opencomputer/agent";
+${imports}
+export const report = defineTool({
+  name: "report",
+  description: "Report the branch",
+  output: ${output},
+  result: true,
+  async run() {
+    return { branch: "task/1" };
+  },
+});
+`;
+  try {
+    const initialized = await initializeAgentProject(root);
+    await mkdir(resolve(initialized.agentRoot, "tools"), { recursive: true });
+    await writeFile(
+      resolve(initialized.agentRoot, "schemas.ts"),
+      `export const built = build();
+export function build() { return { type: "object" }; }
+const local = build();
+export { local as renamed };
+export { defineTool as reexported } from "@opencomputer/agent";
+`,
+    );
+    const cases: Array<[string, string, RegExp]> = [
+      ["", "build()", /defineTool\("report"\) output must be an inline object literal, a const object literal declared in the same module, or a named import of such a const from a module inside the agent directory, not build\(\)/],
+      ["let mutable = { type: \"object\" };", "mutable", /output references mutable, which is declared with let or var; declare it as a const object literal/],
+      ["const computed = build();\nfunction build() { return {}; }", "computed", /output references computed, whose value is not a static object literal: build\(\)/],
+      ["import { built } from \"../schemas.js\";", "built", /output references built, exported by schemas\.ts, whose value is not a static object literal: build\(\)/],
+      ["import { renamed } from \"../schemas.js\";", "renamed", /output references renamed, exported by schemas\.ts \(declared there as local\), whose value is not a static object literal: build\(\)/],
+      ["import { reexported } from \"../schemas.js\";", "reexported", /output references reexported, which schemas\.ts re-exports from another module; import it from the module that declares it/],
+      ["import { useTool } from \"@opencomputer/agent\";", "useTool", /output references useTool, imported from @opencomputer\/agent; a schema must be a const declared in a module inside the agent directory/],
+      ["import * as schemas from \"../schemas.js\";", "schemas.local", /output must be an inline object literal, .* not schemas\.local/],
+      ["", "missing", /output references missing, which is neither a const declared in this module nor a named import from a module inside the agent directory/],
+    ];
+    for (const [imports, output, expected] of cases) {
+      await writeFile(resolve(initialized.agentRoot, "tools", "report.ts"), tool(imports, output));
+      await assert.rejects(prepareAgent(initialized.agentRoot), expected, output);
+    }
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
 test("the compiler packages agent source modules outside the tools directory", async () => {
   const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-source-modules-"));
   const root = resolve(parent, "app");

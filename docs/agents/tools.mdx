@@ -147,6 +147,33 @@ a result tool declares `output`, and it runs with `run()` rather than
 recorded with the deployment, and every value the tool returns is validated
 against it.
 
+`output` can be written three ways, and `input` accepts the same forms: an
+object literal in the call; a `const` object literal in the same module,
+where `as const` keeps its literal types so one schema serves the tool, your
+own validation and the inferred type; or a named import of such a `const`
+from a module inside the agent directory. The build copies the schema as
+written into the deployment without running your code, so a value produced
+by a function, a `let`, a namespace member such as `schemas.report`, a
+package import or a re-export from another module is refused with a message
+that names it.
+
+```tsx
+// tools/report.ts
+import { defineTool } from "@opencomputer/agent";
+import { reportSchema } from "../schemas.js";
+
+export const report = defineTool({
+  name: "report",
+  description: "Report the branch and pull request",
+  input: reportSchema,
+  output: reportSchema,
+  result: true,
+  async run({ input }) {
+    return input;
+  },
+});
+```
+
 The build reads `name`, `result` and `output` from the `defineTool()` call
 itself, without running your code. A form it cannot read fails the build and
 the message names it: a spread (`...options`), a computed property name
