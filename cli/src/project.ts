@@ -1976,6 +1976,7 @@ function outboxRegistration(
 }
 
 function staticJsonValue(expression: ts.Expression, label: string): unknown {
+  expression = unwrapStatic(expression);
   if (ts.isStringLiteralLike(expression)) return expression.text;
   if (ts.isNumericLiteral(expression)) return Number(expression.text);
   if (
@@ -2611,6 +2612,16 @@ interface DefinedTool {
   readonly id: string;
   /** Has preview() and apply(), so the model's call is a proposal. */
   readonly gated: boolean;
+  /** Declares `result: true`: its latest committed output is the session's result. */
+  readonly result: boolean;
+  /** The result tool's output schema as declared, pinned in the deployment for the host to validate against. */
+  readonly output?: Record<string, unknown>;
+}
+
+interface ResultToolManifest {
+  id: string;
+  /** The output schema as written, pinned in the deployment for the host to validate against. */
+  output: Record<string, unknown>;
 }
 
 /** Matches `preview: fn`, `preview(ctx) {}` and `async preview(ctx) {}` alike. */
@@ -2631,15 +2642,58 @@ function hasMember(object: ts.ObjectLiteralExpression, name: string): boolean {
   });
 }
 
+/** The member of an object literal named `name`, whatever its form. */
+function objectMember(
+  object: ts.ObjectLiteralExpression,
+  name: string,
+): ts.ObjectLiteralElementLike | undefined {
+  return object.properties.find((property) => {
+    const key = property.name;
+    return (
+      !!key &&
+      ((ts.isIdentifier(key) && key.text === name) ||
+        (ts.isStringLiteralLike(key) && key.text === name))
+    );
+  });
+}
+
 /**
- * Every tool a module defines, and whether it waits for approval.
+ * The expression behind the syntax that only names a type: parentheses,
+ * `as const`, `as T`, `satisfies T`, `<T>x` and `x!`. None of them changes
+ * the value, and `as const` is how a schema literal keeps its literal types.
+ */
+function unwrapStatic(expression: ts.Expression): ts.Expression {
+  let current = expression;
+  for (;;) {
+    if (ts.isParenthesizedExpression(current)) current = current.expression;
+    else if (ts.isAsExpression(current)) current = current.expression;
+    else if (ts.isSatisfiesExpression(current)) current = current.expression;
+    else if (ts.isTypeAssertionExpression(current)) current = current.expression;
+    else if (ts.isNonNullExpression(current)) current = current.expression;
+    else return current;
+  }
+}
+
+const DEFINE_TOOL_FORM_HINT =
+  "the compiler reads name, result and output from the declaration itself and cannot see through anything else; write each option as a literal property";
+
+/**
+ * Every tool a module defines: its id, whether it waits for approval, and
+ * whether it is the result tool with the output schema the host validates
+ * against. One reading of each `defineTool()` call, from the syntax tree.
  *
  * Read from the syntax tree rather than by regex, because gated-ness is no
- * longer visible in the function's name — it is the presence of `preview` and
+ * longer visible in the function's name; it is the presence of `preview` and
  * `apply` on the object literal. A textual match would see those words inside
  * a nested JSON Schema (a tool whose input has a property called `preview` is
  * perfectly legal) and declare an ordinary tool gated, which the runtime then
  * refuses to render at all.
+ *
+ * A form the reading cannot see through fails the build. A spread, a computed
+ * name or a `result` that is not the literal keyword could carry `result:
+ * true` into the evaluated module while the manifest records an ordinary
+ * tool, and the host would then never commit that tool's output as the
+ * session's result; the diagnostic names the form so the fix is one edit.
  */
 function definedTools(source: string, path: string): DefinedTool[] {
   const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
@@ -2654,76 +2708,64 @@ function definedTools(source: string, path: string): DefinedTool[] {
       if (!argument || !ts.isObjectLiteralExpression(argument)) {
         throw new Error(`${path} defineTool() requires an object literal`);
       }
-      const id = literalStringValue(
-        objectProperty(argument, "name"),
-        `${path} tool name`,
-      );
+      const name = objectProperty(argument, "name");
+      const label = `${path} defineTool(${name && ts.isStringLiteralLike(name) ? JSON.stringify(name.text) : ""})`;
+      for (const property of argument.properties) {
+        if (ts.isSpreadAssignment(property)) {
+          throw new Error(
+            `${label} cannot spread ...${property.expression.getText()}: ${DEFINE_TOOL_FORM_HINT}`,
+          );
+        }
+        if (property.name && ts.isComputedPropertyName(property.name)) {
+          throw new Error(
+            `${label} cannot use the computed property name ${property.name.getText()}: ${DEFINE_TOOL_FORM_HINT}`,
+          );
+        }
+      }
+      const id = literalStringValue(name, `${path} tool name`);
+      const resultMember = objectMember(argument, "result");
+      let result = false;
+      if (resultMember) {
+        const reason = ts.isShorthandPropertyAssignment(resultMember)
+          ? "the shorthand property result"
+          : ts.isPropertyAssignment(resultMember)
+            ? unwrapStatic(resultMember.initializer).kind === ts.SyntaxKind.TrueKeyword
+              ? undefined
+              : unwrapStatic(resultMember.initializer).kind === ts.SyntaxKind.FalseKeyword
+                ? undefined
+                : resultMember.initializer.getText()
+            : "a method or accessor";
+        if (reason !== undefined) {
+          throw new Error(`${label} result must be the literal true or false, not ${reason}`);
+        }
+        result =
+          unwrapStatic((resultMember as ts.PropertyAssignment).initializer).kind ===
+          ts.SyntaxKind.TrueKeyword;
+      }
+      let output: Record<string, unknown> | undefined;
+      if (result) {
+        const outputExpression = objectProperty(argument, "output");
+        if (!outputExpression || !ts.isObjectLiteralExpression(unwrapStatic(outputExpression))) {
+          throw new Error(
+            `${label} is the result tool and must declare output as an inline JSON Schema object literal`,
+          );
+        }
+        output = staticJsonValue(outputExpression, `${label} output`) as Record<string, unknown>;
+      }
       tools.push({
         id,
         // Either half marks it gated; defineTool() rejects a lone one at run
         // time. Treating a half-gate as ordinary here would let a tool that
         // means to wait be registered as one that does not.
-        gated:
-          hasMember(argument, "preview") || hasMember(argument, "apply"),
+        gated: hasMember(argument, "preview") || hasMember(argument, "apply"),
+        result,
+        ...(output ? { output } : {}),
       });
     }
     ts.forEachChild(node, visit);
   };
   visit(file);
   return tools.sort((left, right) => left.id.localeCompare(right.id));
-}
-
-interface ResultToolManifest {
-  id: string;
-  /** The output schema as written, pinned in the deployment for the host to validate against. */
-  output: Record<string, unknown>;
-}
-
-/**
- * The result tools declared in one tool module: every `defineTool()` whose
- * argument carries the literal `result: true`. The `output` schema is read
- * as static JSON rather than evaluated, so the deployment records exactly
- * the schema the source declares. The one-per-agent rule is applied by the
- * caller across all tool modules.
- */
-function definedResultTools(
-  source: string,
-  path: string,
-): ResultToolManifest[] {
-  const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
-  const declared: ResultToolManifest[] = [];
-  const visit = (node: ts.Node): void => {
-    if (
-      ts.isCallExpression(node) &&
-      ts.isIdentifier(node.expression) &&
-      node.expression.text === "defineTool"
-    ) {
-      const argument = node.arguments[0];
-      if (argument && ts.isObjectLiteralExpression(argument)) {
-        const name = objectProperty(argument, "name");
-        const label = `${path} defineTool(${name && ts.isStringLiteralLike(name) ? JSON.stringify(name.text) : ""})`;
-        const result = objectProperty(argument, "result");
-        if (result && result.kind !== ts.SyntaxKind.TrueKeyword && result.kind !== ts.SyntaxKind.FalseKeyword) {
-          throw new Error(`${label} result must be the literal true or false`);
-        }
-        if (result?.kind === ts.SyntaxKind.TrueKeyword) {
-          const output = objectProperty(argument, "output");
-          if (!output || !ts.isObjectLiteralExpression(output)) {
-            throw new Error(
-              `${label} is the result tool and must declare output as an inline JSON Schema object literal`,
-            );
-          }
-          declared.push({
-            id: literalStringValue(name, `${label} name`),
-            output: staticJsonValue(output, `${label} output`) as Record<string, unknown>,
-          });
-        }
-      }
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(file);
-  return declared;
 }
 
 function staticModelSelections(
@@ -2820,8 +2862,19 @@ const MEMORY_CONTRACT_SOURCE = readFileSync(
   "utf8",
 ).replace(/^\/\/# sourceMappingURL=.*$/m, "");
 
-function agentApiRuntimeSource(): string {
+/**
+ * The `@opencomputer/agent` module the runtime evaluates, bundled into every
+ * agent source module. `manifest.resultTool` is what the build recorded; the
+ * shim's defineTool() checks the evaluated declaration against it, so a
+ * module and its manifest can never disagree about which tool's output is
+ * the session's result. Without a manifest (`null`) the check only refuses a
+ * `result: true` the build did not record.
+ */
+export function agentApiRuntimeSource(
+  manifest: { resultTool: string | null } = { resultTool: null },
+): string {
   return `${MEMORY_CONTRACT_SOURCE}
+const MANIFEST_RESULT_TOOL = ${JSON.stringify(manifest.resultTool)};
 function hooks() {
   const value = globalThis[Symbol.for("opencomputer.agent-hooks")];
   if (!value) throw new Error("OpenComputer hooks can only run while rendering an agent");
@@ -2972,6 +3025,12 @@ export const defineTool = (input) => {
     if (typeof input.run !== "function") throw new Error("defineTool requires run(), or preview() and apply() for a tool that waits for approval");
     if (input.result !== undefined && typeof input.result !== "boolean") throw new Error("defineTool result must be true or false");
     if (input.result === true && !input.output) throw new Error("defineTool result tools require an output schema; the host validates every result against it before committing");
+    // The build recorded the result tool from the declaration it could read;
+    // what the module evaluates to must agree, or the host would commit the
+    // wrong tool's output, or none. Refusing at load fails the deployment
+    // instead of running the tool as an ordinary one.
+    if (input.result === true && toolId !== MANIFEST_RESULT_TOOL) throw new Error("Tool " + toolId + " declares result: true, but the deployment records " + (MANIFEST_RESULT_TOOL ? MANIFEST_RESULT_TOOL + " as its result tool" : "no result tool") + "; the declaration was not readable at build time. Write result: true as a literal property of defineTool() and rebuild");
+    if (toolId === MANIFEST_RESULT_TOOL && input.result !== true) throw new Error("Tool " + toolId + " is the deployment's result tool, but the module does not declare result: true; the build and the module disagree, rebuild the deployment");
     const { result, ...definition } = input;
     return Object.freeze({ kind: "tool", version: 1, ...definition, ...(result === true ? { result: true } : {}), id: toolId, name: toolId });
   }
@@ -3073,6 +3132,7 @@ async function bundleAgentSourceModules(
   root: string,
   runtime: string,
   entries: string[],
+  options: { shim: string; write: boolean },
 ): Promise<{ modules: AgentSourceModule[]; entryPaths: Set<string> }> {
   const entryPoints: Record<string, string> = {};
   const entryPaths = new Set<string>();
@@ -3107,7 +3167,7 @@ async function bundleAgentSourceModules(
           }));
           build.onLoad(
             { filter: /^api$/, namespace: "opencomputer-agent-runtime" },
-            () => ({ contents: agentApiRuntimeSource(), loader: "js" }),
+            () => ({ contents: options.shim, loader: "js" }),
           );
         },
       },
@@ -3133,6 +3193,7 @@ async function bundleAgentSourceModules(
     if (!path || path === ".." || path.startsWith("../")) {
       throw new Error("Agent compiler emitted a file outside the runtime");
     }
+    if (!options.write) continue;
     await mkdir(dirname(output.path), { recursive: true });
     await writeFile(output.path, output.contents);
   }
@@ -3249,10 +3310,6 @@ the product or support surface presented to users.
     resolve(runtime, "package.json"),
     `${JSON.stringify({ private: true, type: "module" }, null, 2)}\n`,
   );
-  await writeFile(
-    resolve(runtime, "opencomputer-agent.js"),
-    agentApiRuntimeSource(),
-  );
   const sourceEntries = [resolve(root, "agent.ts")];
   const sourceTools = resolve(root, "tools");
   if (await exists(sourceTools)) {
@@ -3262,7 +3319,15 @@ the product or support surface presented to users.
       sourceEntries.push(resolve(sourceTools, entry.name));
     }
   }
-  const bundled = await bundleAgentSourceModules(root, runtime, sourceEntries);
+  // Two passes. The first discovers the module set and writes nothing; the
+  // declarations are read from it. The second emits the modules with the
+  // shim that carries what the manifest recorded, so a tool module whose
+  // evaluated metadata disagrees with the build fails at load instead of
+  // running as an ordinary tool.
+  const bundled = await bundleAgentSourceModules(root, runtime, sourceEntries, {
+    shim: agentApiRuntimeSource(),
+    write: false,
+  });
   const sourceModules = bundled.modules;
   const toolSources = sourceModules.filter(
     (candidate) =>
@@ -3284,9 +3349,9 @@ the product or support surface presented to users.
       );
       toolModules.push(`../${compiledModulePath(candidate.path)}`);
       resultTools.push(
-        ...definedResultTools(candidate.source, candidate.path).map(
-          (tool) => ({ ...tool, path: candidate.path }),
-        ),
+        ...defined
+          .filter((tool) => tool.result)
+          .map((tool) => ({ id: tool.id, output: tool.output!, path: candidate.path })),
       );
     }
   }
@@ -3319,6 +3384,12 @@ the product or support surface presented to users.
   const resultTool: ResultToolManifest | undefined = resultTools[0]
     ? { id: resultTools[0].id, output: resultTools[0].output }
     : undefined;
+  const shim = agentApiRuntimeSource({ resultTool: resultTool?.id ?? null });
+  await writeFile(resolve(runtime, "opencomputer-agent.js"), shim);
+  await bundleAgentSourceModules(root, runtime, sourceEntries, {
+    shim,
+    write: true,
+  });
   const httpConnections = sourceModules.flatMap((module) =>
     definedHttpConnections(module.source, module.path),
   );

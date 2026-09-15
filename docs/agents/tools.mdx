@@ -147,6 +147,16 @@ a result tool declares `output`, and it runs with `run()` rather than
 recorded with the deployment, and every value the tool returns is validated
 against it.
 
+The build reads `name`, `result` and `output` from the `defineTool()` call
+itself, without running your code. A form it cannot read fails the build and
+the message names it: a spread (`...options`), a computed property name
+(`["result"]: true`), or a `result` that is not the literal `true` or `false`
+(a variable, a shorthand `result`). The rule exists because a `result: true`
+hidden behind a spread would deploy as an ordinary tool and its output would
+never become the session's result. When a deployment loads, the platform
+also checks each tool module's declared `result` against what the build
+recorded; a module that disagrees fails to load rather than run.
+
 A call to the result tool succeeds only once its output is committed to
 the session:
 

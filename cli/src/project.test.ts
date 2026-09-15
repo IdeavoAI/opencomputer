@@ -12,6 +12,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 import {
+  agentApiRuntimeSource,
   buildAgentArtifact,
   findAgentRoot,
   initializeAgentProject,
@@ -1422,6 +1423,90 @@ export const report = defineTool({
       prepareAgent(initialized.agentRoot),
       /tools\/report\.ts defineTool\("report"\) waits for approval and cannot be the result tool/,
     );
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+// The review's finding 9: `result: true` arriving through a spread compiled as
+// an ordinary tool with no `resultTool` in the manifest, while the built
+// module still carried `result: true`. Every form the scan cannot read now
+// fails the build and names the form.
+test("the compiler refuses a defineTool() form it cannot read instead of compiling an ordinary tool", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-result-tool-"));
+  const root = resolve(parent, "app");
+  const tool = (declaration: string) => `import { defineTool } from "@opencomputer/agent";
+const marks = { result: true } as const;
+const flag = true;
+export const report = defineTool({
+  name: "report",
+  description: "Report the branch",
+  output: { type: "object", properties: { branch: { type: "string" } }, required: ["branch"], additionalProperties: false },
+  ${declaration}
+  async run() {
+    return { branch: "task/1" };
+  },
+});
+`;
+  try {
+    const initialized = await initializeAgentProject(root);
+    await mkdir(resolve(initialized.agentRoot, "tools"), { recursive: true });
+    const cases: Array<[string, RegExp]> = [
+      ["...marks,", /tools\/report\.ts defineTool\("report"\) cannot spread \.\.\.marks/],
+      ["result: flag,", /tools\/report\.ts defineTool\("report"\) result must be the literal true or false, not flag/],
+      ["result: marks.result,", /result must be the literal true or false, not marks\.result/],
+      ["result,", /result must be the literal true or false, not the shorthand property result/],
+      ['["result"]: true,', /tools\/report\.ts defineTool\("report"\) cannot use the computed property name \["result"\]/],
+    ];
+    for (const [declaration, expected] of cases) {
+      await writeFile(resolve(initialized.agentRoot, "tools", "report.ts"), tool(declaration));
+      await assert.rejects(prepareAgent(initialized.agentRoot), expected, declaration);
+    }
+    // The literal keyword, wrapped in the idiomatic `as const`, still reads.
+    await writeFile(resolve(initialized.agentRoot, "tools", "report.ts"), tool("result: true as const,"));
+    const runtime = await prepareAgent(initialized.agentRoot);
+    const manifest = JSON.parse(
+      await readFile(resolve(runtime, ".opencomputer", "reactive.json"), "utf8"),
+    ) as { resultTool?: { id: string } };
+    assert.equal(manifest.resultTool?.id, "report");
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+// The second check: the runtime shim carries the manifest's result tool, so a
+// module whose evaluated metadata disagrees with what the build recorded
+// throws at import and the deployment fails to load rather than running the
+// tool as an ordinary one.
+test("the runtime shim refuses a tool module whose result metadata disagrees with the manifest", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-runtime-shim-"));
+  try {
+    const load = async (resultTool: string | null) => {
+      const path = resolve(parent, `shim-${resultTool ?? "none"}.js`);
+      await writeFile(path, agentApiRuntimeSource({ resultTool }));
+      return (await import(`${pathToFileURL(path).href}?test=${crypto.randomUUID()}`)) as {
+        defineTool: (input: Record<string, unknown>) => { result?: boolean };
+      };
+    };
+    const output = { type: "object" };
+    const run = async () => ({});
+    const withReport = await load("report");
+    assert.equal(withReport.defineTool({ name: "report", description: "d", output, result: true, run }).result, true);
+    assert.equal("result" in withReport.defineTool({ name: "lookup", description: "d", run }), false);
+    assert.throws(
+      () => withReport.defineTool({ name: "lookup", description: "d", output, result: true, run }),
+      /Tool lookup declares result: true, but the deployment records report as its result tool/,
+    );
+    assert.throws(
+      () => withReport.defineTool({ name: "report", description: "d", output, run }),
+      /Tool report is the deployment's result tool, but the module does not declare result: true/,
+    );
+    const withoutResult = await load(null);
+    assert.throws(
+      () => withoutResult.defineTool({ name: "report", description: "d", output, result: true, run }),
+      /Tool report declares result: true, but the deployment records no result tool/,
+    );
+    assert.equal("result" in withoutResult.defineTool({ name: "report", description: "d", run }), false);
   } finally {
     await rm(parent, { recursive: true, force: true });
   }
