@@ -49,8 +49,12 @@ export default function Agent() {
 }
 ```
 
-`useService` takes a literal string, read out of your source at build time. It
-does two things:
+`useService` takes a literal string, read out of your source at build time — so
+it goes in the agent function, while `callService` and `listServices` go in a
+tool. An agent renders its instructions synchronously and cannot wait for a
+request, so there is nothing to await it with at render time.
+
+The declaration does two things:
 
 - It puts the service in the capability manifest, so what your agent can reach
   is reviewable without running it.
@@ -65,7 +69,9 @@ does two things:
 | `sheets` | `www.googleapis.com` | Google |
 | `github` | GitHub's API | GitHub |
 
-The four Google services are one consent. GitHub is its own.
+The four Google services are one consent. GitHub is its own. A name outside
+that list fails the build rather than the request, so a typo is caught before
+it is deployed.
 
 ## Making a request
 
@@ -94,6 +100,33 @@ It throws only for things that are wrong before a request is made: a path that
 is not absolute, a missing service name, or running somewhere the platform
 provides no connection layer at all.
 
+### Limits
+
+A proxied request is not an unrestricted `fetch`, and the constraints are
+enforced by the platform rather than by your code.
+
+| | |
+| --- | --- |
+| Methods | `GET`, `POST`, `PUT`, `PATCH`, `DELETE` |
+| Request headers | Only `accept`, `content-type`, `if-match`, `if-none-match` |
+| Request body | 4 MB |
+| Response body | 4 MB |
+| Time | 30 seconds |
+
+**Other request headers are dropped, not rejected.** Anything outside that list
+is removed on the way out and the request is still sent, so an API that changes
+behaviour on a header you set will simply behave as though you had not set it.
+There is no error to catch — if a call is not doing what the service's
+documentation says it should, this is the first thing to check.
+
+Authentication headers are dropped for the same reason they are on a
+[declared connection](/agents/secrets): the credential is the platform's to
+attach, and a request that could overwrite it could also send it elsewhere.
+
+The two size limits raise an error rather than truncating, so a response you
+did not expect to be large fails loudly instead of arriving half-parsed. Page
+through large collections rather than asking for them in one call.
+
 ## Several accounts
 
 An agent that sweeps more than one mailbox cannot hold their names in its
@@ -115,6 +148,7 @@ for (const mailbox of mailboxes) {
 
 | Field | What it is |
 | --- | --- |
+| `id` | The connection's id, for the disconnect route below |
 | `label` | The alias it was connected under. Pass this as `label`. |
 | `displayName` | Who the account belongs to, e.g. the mailbox address |
 | `provider` | `google` or `github` |
