@@ -22,32 +22,66 @@ Use `callService` when the **platform** holds it and has to refresh it.
 Do this first — the code below returns `404` until an account exists.
 
 Each account is connected under a **label**, which is how your agent addresses
-it.
+it. Use the CLI, or the API directly if you are scripting.
 
-```bash
+<CodeGroup>
+```bash CLI
 opencomputer connection add gmail --alias support
 ```
 
-That prints a link. Whoever opens it consents with their own account and it is
-connected under that label — they never sign in to OpenComputer, and no
-credential passes through the CLI. Send the link to the person whose account it
-is.
+```bash API
+export OC_API_URL=https://app.opencomputer.dev
 
-Omitting `--alias` connects it as `default`, which is the label the examples
-below assume. **`default` is a literal name, not a fallback**: if you connect an
+curl -X POST "$OC_API_URL/api/managed-agents/connections/google/link" \
+  -H "x-api-key: $OPENCOMPUTER_API_KEY" \
+  -H "content-type: application/json" \
+  -d '{"service":"gmail","label":"support"}'
+```
+</CodeGroup>
+
+Both return a link. Whoever opens it consents with their own account and it is
+connected under that label — they never sign in to OpenComputer, and no
+credential passes through your side. Send the link to the person whose account
+it is.
+
+Omitting the label connects it as `default`, which is what the examples below
+assume. **`default` is a literal name, not a fallback**: if you connect an
 account as `support`, a call that passes no `label` looks for one called
 `default` and gets a `404` even though `support` is the only account you have.
 
-```bash
+The provider segment in the URL is the grant, not the service — `google` for
+gmail, calendar, drive and sheets; `github` for github.
+
+**Listing what is connected:**
+
+<CodeGroup>
+```bash CLI
 opencomputer connection list
 # support              google   connected    ops@example.com
+```
 
+```bash API
+curl "$OC_API_URL/api/managed-agents/connections" \
+  -H "x-api-key: $OPENCOMPUTER_API_KEY"
+```
+</CodeGroup>
+
+**Disconnecting one.** The CLI takes the label; the API takes the connection id
+from the listing above, and the service rather than the provider.
+
+<CodeGroup>
+```bash CLI
 opencomputer connection remove support
 ```
 
-Each of these has a `--json` form, and the same routes are available directly
-under `/api/managed-agents/connections` if you would rather script against the
-API than shell out.
+```bash API
+curl -X DELETE \
+  "$OC_API_URL/api/managed-agents/connections/google?service=gmail&connectionId=$ID" \
+  -H "x-api-key: $OPENCOMPUTER_API_KEY"
+```
+</CodeGroup>
+
+Every CLI command takes `--json` if you want to parse its output.
 
 ## 2. Declare the service
 
