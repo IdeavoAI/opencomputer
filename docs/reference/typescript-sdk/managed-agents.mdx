@@ -70,6 +70,23 @@ to no other origin: a redirect answer fails the call with code `redirected`
 and the redirect's status, and nothing is sent to the address it named.
 Check `baseUrl` when you see it.
 
+Two codes come from the client rather than the API:
+
+| `code` | Meaning |
+| --- | --- |
+| `redirected` | The call was answered with a redirect; the client never follows one with the API key. `status` is the redirect's status. |
+| `invalid_response` | The call succeeded but its body is not JSON or does not match the documented shape of the route. `status` is the HTTP status; the message names the route and the first field that did not match. |
+
+## Validation
+
+Every response is checked against the documented shape of its route before
+the method returns: the fields the [API reference](/agents/api) lists, with
+their types. A field the documentation does not list passes through as it
+came, so an addition to the API never fails a call. Application data, that
+is a session's `result.data`, a turn's `payload`, and a tool call's `input`
+and `output`, is checked only as a JSON value; what it contains is yours to
+validate.
+
 ## Sessions
 
 | Method | Route | Returns |

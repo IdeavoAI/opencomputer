@@ -74,7 +74,12 @@ describe("OpenComputer client", () => {
   });
 
   it("lists sessions with filters, label filters and paging, and normalizes a missing cursor", async () => {
-    const rows = [{ id: "ses_2" }, { id: "ses_1" }];
+    const row = (id: string) => ({
+      id, projectId: "prj_1", agentId: "worker", deploymentId: "dep_1", environment: null, source: "api", status: "idle",
+      labels: {}, createdAt: "t", updatedAt: "t", revision: 1,
+      activity: { activeTurnId: null, queued: 0, lastSettledTurn: null }, result: null,
+    });
+    const rows = [row("ses_2"), row("ses_1")];
     let withCursor = true;
     const api = fakeApi({
       "GET /api/managed-agents/sessions": () => Response.json(withCursor ? { sessions: rows, nextCursor: "c2" } : { sessions: rows }),
@@ -120,7 +125,7 @@ describe("OpenComputer client", () => {
   });
 
   it("reads the event log from a cursor", async () => {
-    const events = [{ id: "e1", seq: 1, type: "session.created", data: {} }];
+    const events = [{ id: "e1", seq: 1, timestamp: "t", sessionId: "ses_1", type: "session.created", data: { agentId: "worker", deploymentId: "dep_1" } }];
     const api = fakeApi({ "GET /api/managed-agents/sessions/ses_1/events": () => Response.json({ events }) });
     expect(await oc(api).sessions.events.list("ses_1", { after: 7 })).toEqual(events);
     expect(api.last().path).toBe("/api/managed-agents/sessions/ses_1/events?after=7");
@@ -242,6 +247,33 @@ describe("OpenComputer client", () => {
     expect(await client.sessions.get("limited").catch((cause: unknown) => cause)).toMatchObject({
       code: "rate_limited", status: 429, retryAfter: 3,
     });
+  });
+
+  it("fails a success whose body is not JSON or not the documented shape with invalid_response, and passes unknown fields through", async () => {
+    const session = { id: "ses_1", agentId: "worker", deploymentId: "dep_1", status: "idle", source: "api", turns: [], createdAt: "t", updatedAt: "t" };
+    const api = fakeApi({
+      "GET /api/managed-agents/sessions/text": () => new Response("ok", { status: 200, headers: { "content-type": "text/plain" } }),
+      "GET /api/managed-agents/sessions/shape": () => Response.json({ ...session, turns: "none" }),
+      "GET /api/managed-agents/sessions/extra": () => Response.json({ ...session, nextThing: { added: true } }),
+    });
+    const client = oc(api);
+    // A 200 with a text body is not a session; before validation it came back typed as one.
+    const text = await client.sessions.get("text").catch((cause: unknown) => cause);
+    expect(text).toBeInstanceOf(OpenComputerError);
+    expect(text).toMatchObject({ code: "invalid_response", status: 200 });
+    expect((text as Error).message).toMatch(/GET \/sessions\/text/);
+    const shape = await client.sessions.get("shape").catch((cause: unknown) => cause);
+    expect(shape).toMatchObject({ code: "invalid_response", status: 200 });
+    expect((shape as Error).message).toMatch(/turns/);
+    expect(await client.sessions.get("extra")).toEqual({ ...session, nextThing: { added: true } });
+  });
+
+  it("accepts every persisted turn status on an admission receipt", async () => {
+    const api = fakeApi({
+      "POST /api/managed-agents/sessions/ses_1/turns": () => Response.json({ turnId: "turn_1", status: "completed", duplicate: true }),
+    });
+    const receipt = await oc(api).sessions.turns.send("ses_1", { input: "again", idempotencyKey: "task_1/start" });
+    expect(receipt).toMatchObject({ turnId: "turn_1", duplicate: true });
   });
 
   it("honours a custom base URL and requires a key", () => {

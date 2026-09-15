@@ -1,8 +1,11 @@
 // The management client: one class per API section, each method one route
 // of docs/agents/api.mdx. Server-side only; the API key reaches every
-// project, agent and session of the organization.
+// project, agent and session of the organization. Every call names the
+// documented shape of its answer (shapes.ts); the transport checks the body
+// against it before the method returns.
 
 import { Http, type HttpOptions, segment } from "./http.js";
+import * as shapes from "./shapes.js";
 import {
   startOnDocument,
   type StartOnDocumentParams,
@@ -89,11 +92,10 @@ export class Turns {
     if (params.idempotencyKey !== undefined) body.idempotencyKey = params.idempotencyKey;
     if (params.mode !== undefined) body.mode = params.mode;
     if (params.payload !== undefined) body.payload = params.payload;
-    const answer = await this.http.send<{ turnId: string; status: string; duplicate?: boolean }>(
-      "POST",
-      `/sessions/${segment(sessionId)}/turns`,
-      { body, signal: options.signal },
-    );
+    const answer = await this.http.send("POST", `/sessions/${segment(sessionId)}/turns`, shapes.turnReceipt, {
+      body,
+      signal: options.signal,
+    });
     return {
       turnId: answer.body.turnId,
       status: answer.body.status === "running" ? "running" : "queued",
@@ -110,7 +112,7 @@ export class Events {
    * `seq`, ascending. Repeat from the last `seq` until a page is empty.
    */
   async list(sessionId: string, query: ListEventsQuery = {}, options: CallOptions = {}): Promise<SessionEvent[]> {
-    const page = await this.http.request<{ events: SessionEvent[] }>("GET", `/sessions/${segment(sessionId)}/events`, {
+    const page = await this.http.request("GET", `/sessions/${segment(sessionId)}/events`, shapes.eventsPage, {
       query: { after: query.after ?? 0 },
       signal: options.signal,
     });
@@ -129,21 +131,17 @@ export class Sessions {
 
   /** `POST /sessions`: creates a session without a turn. `created` is false when the key had already created it. */
   async create(params: CreateSessionParams, options: CreateSessionOptions = {}): Promise<SessionCreated> {
-    const answer = await this.http.send<{ session: SessionCreated["session"]; deployment?: Deployment }>(
-      "POST",
-      "/sessions",
-      {
-        body: params,
-        headers: options.idempotencyKey !== undefined ? { "idempotency-key": options.idempotencyKey } : undefined,
-        signal: options.signal,
-      },
-    );
+    const answer = await this.http.send("POST", "/sessions", shapes.sessionCreated, {
+      body: params,
+      headers: options.idempotencyKey !== undefined ? { "idempotency-key": options.idempotencyKey } : undefined,
+      signal: options.signal,
+    });
     return { session: answer.body.session, deployment: answer.body.deployment, created: answer.status === 201 };
   }
 
   /** `GET /sessions/<id>`. */
   get(sessionId: string, options: CallOptions = {}): Promise<Session> {
-    return this.http.request<Session>("GET", `/sessions/${segment(sessionId)}`, { signal: options.signal });
+    return this.http.request("GET", `/sessions/${segment(sessionId)}`, shapes.session, { signal: options.signal });
   }
 
   /**
@@ -151,31 +149,28 @@ export class Sessions {
    * `nextCursor` for the next page. Sort the pages you hold by `updatedAt`
    * for recent activity first.
    */
-  async list(query: ListSessionsQuery = {}, options: CallOptions = {}): Promise<SessionPage> {
+  list(query: ListSessionsQuery = {}, options: CallOptions = {}): Promise<SessionPage> {
     const { labels, ...rest } = query;
     const q: Record<string, string | number | undefined> = { ...rest };
     for (const [key, value] of Object.entries(labels ?? {})) q[`label.${key}`] = value;
-    const page = await this.http.request<{ sessions: SessionPage["sessions"]; nextCursor?: string | null }>(
-      "GET",
-      "/sessions",
-      { query: q, signal: options.signal },
-    );
-    return { sessions: page.sessions, nextCursor: page.nextCursor ?? null };
+    return this.http.request("GET", "/sessions", shapes.sessionPage, { query: q, signal: options.signal });
   }
 
   /** `POST /sessions/<id>/end`: cancels queued and running turns and revokes memory writes. */
   end(sessionId: string, options: CallOptions = {}): Promise<Session> {
-    return this.http.request<Session>("POST", `/sessions/${segment(sessionId)}/end`, { signal: options.signal });
+    return this.http.request("POST", `/sessions/${segment(sessionId)}/end`, shapes.session, { signal: options.signal });
   }
 
   /** `POST /sessions/<id>/interrupt`: stops the running turn; the next queued turn starts. */
   interrupt(sessionId: string, options: CallOptions = {}): Promise<Session> {
-    return this.http.request<Session>("POST", `/sessions/${segment(sessionId)}/interrupt`, { signal: options.signal });
+    return this.http.request("POST", `/sessions/${segment(sessionId)}/interrupt`, shapes.session, {
+      signal: options.signal,
+    });
   }
 
   /** `PATCH /sessions/<id>/labels`: per-key last-write-wins (per design 1c07584, backend in flight). */
   setLabels(sessionId: string, params: SetLabelsParams, options: CallOptions = {}): Promise<Session> {
-    return this.http.request<Session>("PATCH", `/sessions/${segment(sessionId)}/labels`, {
+    return this.http.request("PATCH", `/sessions/${segment(sessionId)}/labels`, shapes.session, {
       body: params,
       signal: options.signal,
     });
@@ -199,7 +194,7 @@ export class MemoryDocuments {
 
   /** `GET .../documents`: metadata without `text`; follow `nextCursor`. */
   list(projectId: string, resource: string, options: ListDocumentsOptions): Promise<MemoryDocumentPage> {
-    return this.http.request<MemoryDocumentPage>("GET", this.path(projectId, resource), {
+    return this.http.request("GET", this.path(projectId, resource), shapes.memoryDocumentPage, {
       query: { environment: options.environment, cursor: options.cursor },
       signal: options.signal,
     });
@@ -207,7 +202,7 @@ export class MemoryDocuments {
 
   /** `GET .../documents/<id>`. */
   get(projectId: string, resource: string, documentId: string, options: EnvironmentOptions): Promise<MemoryDocument> {
-    return this.http.request<MemoryDocument>("GET", this.path(projectId, resource, documentId), {
+    return this.http.request("GET", this.path(projectId, resource, documentId), shapes.memoryDocument, {
       query: { environment: options.environment },
       signal: options.signal,
     });
@@ -221,7 +216,7 @@ export class MemoryDocuments {
     body: CreateMemoryDocumentBody,
     options: EnvironmentOptions,
   ): Promise<MemoryDocument> {
-    return this.http.request<MemoryDocument>("PUT", this.path(projectId, resource, documentId), {
+    return this.http.request("PUT", this.path(projectId, resource, documentId), shapes.memoryDocument, {
       query: { environment: options.environment },
       headers: { "if-none-match": "*" },
       body,
@@ -237,7 +232,7 @@ export class MemoryDocuments {
     body: ReplaceMemoryDocumentBody,
     options: DocumentWriteOptions,
   ): Promise<MemoryDocument> {
-    return this.http.request<MemoryDocument>("PUT", this.path(projectId, resource, documentId), {
+    return this.http.request("PUT", this.path(projectId, resource, documentId), shapes.memoryDocument, {
       query: { environment: options.environment },
       headers: { "if-match": quote(options.revision) },
       body,
@@ -253,7 +248,7 @@ export class MemoryDocuments {
     body: PatchMemoryDocumentBody,
     options: DocumentWriteOptions,
   ): Promise<MemoryDocument> {
-    return this.http.request<MemoryDocument>("PATCH", this.path(projectId, resource, documentId), {
+    return this.http.request("PATCH", this.path(projectId, resource, documentId), shapes.memoryDocument, {
       query: { environment: options.environment },
       headers: { "if-match": quote(options.revision) },
       body,
@@ -263,7 +258,7 @@ export class MemoryDocuments {
 
   /** `DELETE .../documents/<id>` with `If-Match`. The id stays reserved. */
   async delete(projectId: string, resource: string, documentId: string, options: DocumentWriteOptions): Promise<void> {
-    await this.http.request<void>("DELETE", this.path(projectId, resource, documentId), {
+    await this.http.request("DELETE", this.path(projectId, resource, documentId), shapes.none, {
       query: { environment: options.environment },
       headers: { "if-match": quote(options.revision) },
       signal: options.signal,
@@ -279,8 +274,8 @@ export class Memory {
   }
 
   /** `GET /projects/<p>/memory`: the environment's resource inventory. */
-  async resources(projectId: string, options: EnvironmentOptions): Promise<MemoryResourceInventory> {
-    return this.http.request<MemoryResourceInventory>("GET", `/projects/${segment(projectId)}/memory`, {
+  resources(projectId: string, options: EnvironmentOptions): Promise<MemoryResourceInventory> {
+    return this.http.request("GET", `/projects/${segment(projectId)}/memory`, shapes.memoryResourceInventory, {
       query: { environment: options.environment },
       signal: options.signal,
     });
@@ -297,7 +292,7 @@ export class Webhooks {
 
   /** `GET /projects/<p>/webhooks`: URLs without tokens. */
   async list(projectId: string, query: ListWebhooksQuery = {}, options: CallOptions = {}): Promise<Webhook[]> {
-    const page = await this.http.request<{ webhooks: Webhook[] }>("GET", this.path(projectId), {
+    const page = await this.http.request("GET", this.path(projectId), shapes.webhooksPage, {
       query: { ...query },
       signal: options.signal,
     });
@@ -306,7 +301,7 @@ export class Webhooks {
 
   /** `POST /projects/<p>/webhooks`: `token` and the full `invocationUrl` appear once. */
   async create(projectId: string, params: CreateWebhookParams, options: CallOptions = {}): Promise<Webhook> {
-    const answer = await this.http.request<{ webhook: Webhook }>("POST", this.path(projectId), {
+    const answer = await this.http.request("POST", this.path(projectId), shapes.webhookEnvelope, {
       body: params,
       signal: options.signal,
     });
@@ -320,7 +315,7 @@ export class Webhooks {
     params: UpdateWebhookParams,
     options: CallOptions = {},
   ): Promise<Webhook> {
-    const answer = await this.http.request<{ webhook: Webhook }>("PATCH", this.path(projectId, webhookId), {
+    const answer = await this.http.request("PATCH", this.path(projectId, webhookId), shapes.webhookEnvelope, {
       body: params,
       signal: options.signal,
     });
@@ -329,9 +324,10 @@ export class Webhooks {
 
   /** `POST /projects/<p>/webhooks/<id>/rotate-token`: the webhook with its new token. */
   async rotateToken(projectId: string, webhookId: string, options: CallOptions = {}): Promise<Webhook> {
-    const answer = await this.http.request<{ webhook: Webhook }>(
+    const answer = await this.http.request(
       "POST",
       `${this.path(projectId, webhookId)}/rotate-token`,
+      shapes.webhookEnvelope,
       { signal: options.signal },
     );
     return answer.webhook;
@@ -339,14 +335,15 @@ export class Webhooks {
 
   /** `DELETE /projects/<p>/webhooks/<id>`. */
   async delete(projectId: string, webhookId: string, options: CallOptions = {}): Promise<void> {
-    await this.http.request<void>("DELETE", this.path(projectId, webhookId), { signal: options.signal });
+    await this.http.request("DELETE", this.path(projectId, webhookId), shapes.none, { signal: options.signal });
   }
 
   /** `GET /projects/<p>/webhooks/<id>/requests`: the request ledger. */
   async requests(projectId: string, webhookId: string, options: CallOptions = {}): Promise<WebhookRequest[]> {
-    const page = await this.http.request<{ requests: WebhookRequest[] }>(
+    const page = await this.http.request(
       "GET",
       `${this.path(projectId, webhookId)}/requests`,
+      shapes.webhookRequestsPage,
       { signal: options.signal },
     );
     return page.requests;
@@ -367,7 +364,7 @@ export class EventSubscriptions {
     params: CreateEventSubscriptionBody,
     options: CallOptions = {},
   ): Promise<EventSubscription> {
-    const answer = await this.http.request<{ subscription: EventSubscription }>("POST", this.path(projectId), {
+    const answer = await this.http.request("POST", this.path(projectId), shapes.eventSubscriptionEnvelope, {
       body: params,
       signal: options.signal,
     });
@@ -376,7 +373,7 @@ export class EventSubscriptions {
 
   /** `GET /projects/<p>/event-subscriptions`. */
   async list(projectId: string, options: CallOptions = {}): Promise<EventSubscription[]> {
-    const page = await this.http.request<{ subscriptions: EventSubscription[] }>("GET", this.path(projectId), {
+    const page = await this.http.request("GET", this.path(projectId), shapes.eventSubscriptionsPage, {
       signal: options.signal,
     });
     return page.subscriptions;
@@ -384,9 +381,10 @@ export class EventSubscriptions {
 
   /** `GET /projects/<p>/event-subscriptions/<id>`. */
   async get(projectId: string, subscriptionId: string, options: CallOptions = {}): Promise<EventSubscription> {
-    const answer = await this.http.request<{ subscription: EventSubscription }>(
+    const answer = await this.http.request(
       "GET",
       this.path(projectId, subscriptionId),
+      shapes.eventSubscriptionEnvelope,
       { signal: options.signal },
     );
     return answer.subscription;
@@ -394,7 +392,7 @@ export class EventSubscriptions {
 
   /** `DELETE /projects/<p>/event-subscriptions/<id>`: pending deliveries stop. */
   async delete(projectId: string, subscriptionId: string, options: CallOptions = {}): Promise<void> {
-    await this.http.request<void>("DELETE", this.path(projectId, subscriptionId), { signal: options.signal });
+    await this.http.request("DELETE", this.path(projectId, subscriptionId), shapes.none, { signal: options.signal });
   }
 }
 
@@ -407,13 +405,13 @@ export class GitHub {
    * backend in flight). `404 github_connection_not_found` without an
    * installation; `502 github_unavailable` when GitHub fails.
    */
-  async repositories(projectId: string, query: ListRepositoriesQuery, options: CallOptions = {}): Promise<RepositoryPage> {
-    const page = await this.http.request<{ repositories: RepositoryPage["repositories"]; nextCursor?: string | null }>(
+  repositories(projectId: string, query: ListRepositoriesQuery, options: CallOptions = {}): Promise<RepositoryPage> {
+    return this.http.request(
       "GET",
       `/projects/${segment(projectId)}/github/repositories`,
+      shapes.repositoryPage,
       { query: { ...query }, signal: options.signal },
     );
-    return { repositories: page.repositories, nextCursor: page.nextCursor ?? null };
   }
 }
 
@@ -432,18 +430,20 @@ export class Projects {
 
   /** `GET /projects`. */
   async list(options: CallOptions = {}): Promise<Project[]> {
-    const page = await this.http.request<{ projects: Project[] }>("GET", "/projects", { signal: options.signal });
+    const page = await this.http.request("GET", "/projects", shapes.projectsPage, { signal: options.signal });
     return page.projects;
   }
 
   /** `GET /projects/<p>`: the project with its deployments, sessions, connections, channels and schedules. */
   get(projectId: string, options: CallOptions = {}): Promise<ProjectDetail> {
-    return this.http.request<ProjectDetail>("GET", `/projects/${segment(projectId)}`, { signal: options.signal });
+    return this.http.request("GET", `/projects/${segment(projectId)}`, shapes.projectDetail, {
+      signal: options.signal,
+    });
   }
 
   /** `POST /projects`. */
   create(params: CreateProjectParams, options: CallOptions = {}): Promise<Project> {
-    return this.http.request<Project>("POST", "/projects", { body: params, signal: options.signal });
+    return this.http.request("POST", "/projects", shapes.project, { body: params, signal: options.signal });
   }
 }
 
@@ -454,7 +454,7 @@ export class Agents {
 
   /** `GET /agents`. */
   async list(options: CallOptions = {}): Promise<AgentSummary[]> {
-    const page = await this.http.request<{ agents: AgentSummary[] }>("GET", "/agents", { signal: options.signal });
+    const page = await this.http.request("GET", "/agents", shapes.agentsPage, { signal: options.signal });
     return page.agents;
   }
 }
@@ -464,12 +464,14 @@ export class Deployments {
 
   /** `GET /deployments/<id>`. */
   get(deploymentId: string, options: CallOptions = {}): Promise<Deployment> {
-    return this.http.request<Deployment>("GET", `/deployments/${segment(deploymentId)}`, { signal: options.signal });
+    return this.http.request("GET", `/deployments/${segment(deploymentId)}`, shapes.deployment, {
+      signal: options.signal,
+    });
   }
 
   /** `GET /deployments?agentId=`. */
   async list(query: ListDeploymentsQuery, options: CallOptions = {}): Promise<Deployment[]> {
-    const page = await this.http.request<{ deployments: Deployment[] }>("GET", "/deployments", {
+    const page = await this.http.request("GET", "/deployments", shapes.deploymentsPage, {
       query: { ...query },
       signal: options.signal,
     });

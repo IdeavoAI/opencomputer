@@ -169,7 +169,8 @@ export interface SessionSummary {
   projectId?: string;
   agentId: string;
   deploymentId: string;
-  environment?: Environment;
+  /** `null` when the session has no environment. */
+  environment?: Environment | null;
   source: SessionSource;
   status: SessionStatus;
   labels?: SessionLabels;

@@ -36,10 +36,10 @@ function fakeApi(state: { document: "absent" | "present" | "deleted"; sessions?:
       if (existing === "other-bindings") {
         return Response.json({ error: { code: "idempotency_conflict", message: "Idempotency-Key was already used with different session input" } }, { status: 409 });
       }
-      if (existing) return Response.json({ session: { id: existing, status: "idle", executionMode: "workerd" } }, { status: 200 });
+      if (existing) return Response.json({ session: { id: existing, status: "idle", executionMode: "workerd", createdAt: "2026-09-10T12:00:00.000Z" } }, { status: 200 });
       const id = `ses-${sessions.size + 1}`;
       sessions.set(key, id);
-      return Response.json({ session: { id, status: "connecting", executionMode: "workerd" } }, { status: 201 });
+      return Response.json({ session: { id, status: "connecting", executionMode: "workerd", createdAt: "2026-09-10T12:00:00.000Z" } }, { status: 201 });
     }
     return Response.json({ error: { code: "not_found", message: "no route" } }, { status: 404 });
   };

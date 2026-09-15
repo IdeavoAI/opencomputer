@@ -42,6 +42,7 @@ describe("@opencomputer/sdk/managed-agents", () => {
       "http.ts",
       "index.ts",
       "memory.ts",
+      "shapes.ts",
       "start-on-document.ts",
       "types.ts",
     ]);

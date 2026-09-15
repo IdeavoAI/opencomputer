@@ -7,9 +7,10 @@
 // two calls in order and makes the pair converge under one key.
 
 import { OpenComputerError } from "./errors.js";
-import { type Http, segment } from "./http.js";
+import { type Answer, type Http, segment } from "./http.js";
+import * as shapes from "./shapes.js";
 import type { MemoryAccess, MemoryAgentWrites, MemoryBindings, MemoryDocument } from "./memory.js";
-import type { Environment, SessionSource } from "./types.js";
+import type { Environment, SessionCreated, SessionSource } from "./types.js";
 
 export interface StartOnDocumentParams {
   /** The project whose memory holds the document. */
@@ -97,7 +98,7 @@ export async function startOnDocument(http: Http, params: StartOnDocumentParams)
   let document: MemoryDocument;
   let documentCreated: boolean;
   try {
-    const created = await http.send<MemoryDocument>("PUT", documentPath, {
+    const created = await http.send("PUT", documentPath, shapes.memoryDocument, {
       query,
       headers: { "if-none-match": "*" },
       body: {
@@ -113,7 +114,7 @@ export async function startOnDocument(http: Http, params: StartOnDocumentParams)
   } catch (cause) {
     if (!(cause instanceof OpenComputerError) || cause.status !== 412) throw cause;
     try {
-      document = await http.request<MemoryDocument>("GET", documentPath, { query, signal: params.signal });
+      document = await http.request("GET", documentPath, shapes.memoryDocument, { query, signal: params.signal });
     } catch (readCause) {
       if (readCause instanceof OpenComputerError && readCause.status === 404) {
         throw new OpenComputerError(
@@ -128,9 +129,9 @@ export async function startOnDocument(http: Http, params: StartOnDocumentParams)
     documentCreated = false;
   }
 
-  let created: { status: number; body: { session?: { id?: string; status?: string; executionMode?: string } } };
+  let created: Answer<Omit<SessionCreated, "created">>;
   try {
-    created = await http.send("POST", "/sessions", {
+    created = await http.send("POST", "/sessions", shapes.sessionCreated, {
       headers: { "idempotency-key": await sessionIdempotencyKey(params.idempotencyKey) },
       body: {
         agentId: `${params.agent}@${params.environment}`,
@@ -154,8 +155,7 @@ export async function startOnDocument(http: Http, params: StartOnDocumentParams)
     }
     throw cause;
   }
-  const session = created.body?.session;
-  if (!session?.id) throw new OpenComputerError(created.status, "invalid_response", "session create returned no session id");
+  const { session } = created.body;
   return {
     document: { id: document.id, created: documentCreated, revision: document.revision, title: document.title },
     session: {

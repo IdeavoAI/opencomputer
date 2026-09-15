@@ -9,8 +9,14 @@
 // else: fetch runs with `redirect: "manual"`, and a 3xx answer is an error
 // with code `redirected`, because following it would carry the key to
 // whatever origin the response names.
+//
+// Every success is checked against the documented shape of its route
+// (shapes.ts) before it is returned: a body that is not JSON, or does not
+// have the fields the docs promise, is an error with code `invalid_response`
+// rather than a value typed by assumption.
 
 import { errorFromResponse, OpenComputerError } from "./errors.js";
+import { ShapeError, type Shape } from "./shapes.js";
 
 export const DEFAULT_BASE_URL = "https://app.opencomputer.dev/api/managed-agents";
 
@@ -61,8 +67,12 @@ export class Http {
     return url.toString();
   }
 
-  /** Sends a request and returns the parsed body with the status; throws `OpenComputerError` on a failed status. */
-  async send<T>(method: string, path: string, options: RequestOptions = {}): Promise<Answer<T>> {
+  /**
+   * Sends a request and returns the body, checked against `shape`, with the
+   * status. Throws `OpenComputerError` on a failed status, on a redirect, and
+   * on a success whose body is not JSON or not the documented shape.
+   */
+  async send<T>(method: string, path: string, shape: Shape<T>, options: RequestOptions = {}): Promise<Answer<T>> {
     const headers: Record<string, string> = {
       "x-api-key": this.apiKey,
       accept: "application/json",
@@ -82,14 +92,36 @@ export class Http {
           "the client does not follow redirects with the API key. Check baseUrl.",
       );
     }
-    const body = await readJson(response);
-    if (!response.ok) throw errorFromResponse(response.status, body, response.headers);
-    return { status: response.status, body: body as T, headers: response.headers };
+    const text = response.status === 204 ? "" : await response.text();
+    if (!response.ok) {
+      throw errorFromResponse(response.status, parseJson(text) ?? (text ? { error: text } : undefined), response.headers);
+    }
+    let body: unknown;
+    if (text) {
+      body = parseJson(text);
+      if (body === undefined) {
+        throw new OpenComputerError(
+          response.status,
+          "invalid_response",
+          `${method} ${path} returned a body that is not JSON`,
+        );
+      }
+    }
+    try {
+      return { status: response.status, body: shape(body, "body"), headers: response.headers };
+    } catch (cause) {
+      if (!(cause instanceof ShapeError)) throw cause;
+      throw new OpenComputerError(
+        response.status,
+        "invalid_response",
+        `${method} ${path} returned a body that is not the documented shape: ${cause.message}`,
+      );
+    }
   }
 
   /** `send` for callers that need only the body. */
-  async request<T>(method: string, path: string, options: RequestOptions = {}): Promise<T> {
-    return (await this.send<T>(method, path, options)).body;
+  async request<T>(method: string, path: string, shape: Shape<T>, options: RequestOptions = {}): Promise<T> {
+    return (await this.send(method, path, shape, options)).body;
   }
 }
 
@@ -102,14 +134,13 @@ function isRedirect(response: Response): boolean {
   return response.type === "opaqueredirect" || (response.status >= 300 && response.status < 400);
 }
 
-async function readJson(response: Response): Promise<unknown> {
-  if (response.status === 204) return undefined;
-  const text = await response.text();
+/** The parsed JSON of a body, or undefined when the text is not JSON. */
+function parseJson(text: string): unknown {
   if (!text) return undefined;
   try {
     return JSON.parse(text) as unknown;
   } catch {
-    return { error: text };
+    return undefined;
   }
 }
 
