@@ -2673,6 +2673,59 @@ function definedTools(source: string, path: string): DefinedTool[] {
   return tools.sort((left, right) => left.id.localeCompare(right.id));
 }
 
+interface ResultToolManifest {
+  id: string;
+  /** The output schema as written, pinned in the deployment for the host to validate against. */
+  output: Record<string, unknown>;
+}
+
+/**
+ * The result tools declared in one tool module: every `defineTool()` whose
+ * argument carries the literal `result: true`. The `output` schema is read
+ * as static JSON rather than evaluated, so the deployment records exactly
+ * the schema the source declares. The one-per-agent rule is applied by the
+ * caller across all tool modules.
+ */
+function definedResultTools(
+  source: string,
+  path: string,
+): ResultToolManifest[] {
+  const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
+  const declared: ResultToolManifest[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "defineTool"
+    ) {
+      const argument = node.arguments[0];
+      if (argument && ts.isObjectLiteralExpression(argument)) {
+        const name = objectProperty(argument, "name");
+        const label = `${path} defineTool(${name && ts.isStringLiteralLike(name) ? JSON.stringify(name.text) : ""})`;
+        const result = objectProperty(argument, "result");
+        if (result && result.kind !== ts.SyntaxKind.TrueKeyword && result.kind !== ts.SyntaxKind.FalseKeyword) {
+          throw new Error(`${label} result must be the literal true or false`);
+        }
+        if (result?.kind === ts.SyntaxKind.TrueKeyword) {
+          const output = objectProperty(argument, "output");
+          if (!output || !ts.isObjectLiteralExpression(output)) {
+            throw new Error(
+              `${label} is the result tool and must declare output as an inline JSON Schema object literal`,
+            );
+          }
+          declared.push({
+            id: literalStringValue(name, `${label} name`),
+            output: staticJsonValue(output, `${label} output`) as Record<string, unknown>,
+          });
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return declared;
+}
+
 function staticModelSelections(
   source: string,
 ): Array<{ provider: string; model: string }> {
@@ -2917,8 +2970,12 @@ export const defineTool = (input) => {
   const gated = typeof input.preview === "function" || typeof input.apply === "function";
   if (!gated) {
     if (typeof input.run !== "function") throw new Error("defineTool requires run(), or preview() and apply() for a tool that waits for approval");
-    return Object.freeze({ kind: "tool", version: 1, ...input, id: toolId, name: toolId });
+    if (input.result !== undefined && typeof input.result !== "boolean") throw new Error("defineTool result must be true or false");
+    if (input.result === true && !input.output) throw new Error("defineTool result tools require an output schema; the host validates every result against it before committing");
+    const { result, ...definition } = input;
+    return Object.freeze({ kind: "tool", version: 1, ...definition, ...(result === true ? { result: true } : {}), id: toolId, name: toolId });
   }
+  if ("result" in input) throw new Error("A tool that waits for approval cannot be the result tool");
   if (typeof input.preview !== "function") throw new Error("A tool with apply() also requires preview()");
   if (typeof input.apply !== "function") throw new Error("A tool with preview() also requires apply()");
   if (typeof input.run === "function") throw new Error("A tool has either run(), or preview() and apply() - not both; run() is written for you when the tool waits for approval");
@@ -3215,6 +3272,7 @@ the product or support surface presented to users.
   const reactiveTools: string[] = [];
   const gatedTools: string[] = [];
   const toolModules: string[] = [];
+  const resultTools: Array<ResultToolManifest & { path: string }> = [];
   for (const candidate of toolSources) {
     // literalStringValue throws on a computed name, which is what used to be
     // caught by counting calls against extracted ids.
@@ -3225,6 +3283,11 @@ the product or support surface presented to users.
         ...defined.filter((tool) => tool.gated).map((tool) => tool.id),
       );
       toolModules.push(`../${compiledModulePath(candidate.path)}`);
+      resultTools.push(
+        ...definedResultTools(candidate.source, candidate.path).map(
+          (tool) => ({ ...tool, path: candidate.path }),
+        ),
+      );
     }
   }
   const duplicateTool = reactiveTools.find(
@@ -3235,6 +3298,27 @@ the product or support surface presented to users.
       `Tool id ${JSON.stringify(duplicateTool)} is defined more than once`,
     );
   }
+  // One result per session, so one result tool per agent: a second one
+  // would leave the host with two schemas and no rule for which output
+  // becomes the session's result.
+  if (resultTools.length > 1) {
+    throw new Error(
+      `An agent may declare one result tool; found ${resultTools
+        .map((tool) => `${JSON.stringify(tool.id)} in ${tool.path}`)
+        .join(" and ")}`,
+    );
+  }
+  // A gated tool's run() is written by the platform and returns its sentence;
+  // there is no output of its own to commit as the session's result.
+  const gatedResultTool = resultTools.find((tool) => gatedTools.includes(tool.id));
+  if (gatedResultTool) {
+    throw new Error(
+      `${gatedResultTool.path} defineTool(${JSON.stringify(gatedResultTool.id)}) waits for approval and cannot be the result tool`,
+    );
+  }
+  const resultTool: ResultToolManifest | undefined = resultTools[0]
+    ? { id: resultTools[0].id, output: resultTools[0].output }
+    : undefined;
   const httpConnections = sourceModules.flatMap((module) =>
     definedHttpConnections(module.source, module.path),
   );
@@ -3320,6 +3404,9 @@ the product or support surface presented to users.
         tools,
         gatedTools: [...gatedTools].sort(),
         toolModules: toolModules.sort(),
+        // The result tool and the schema the host validates its output
+        // against before committing it as the session's result.
+        ...(resultTool ? { resultTool } : {}),
         subagents: literalHookIds(agentSource, "useSubagent"),
         // Declared HTTP connections AND managed-service grants: the platform
         // reads one list, and a provider grant absent from it makes every

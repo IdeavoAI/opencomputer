@@ -96,13 +96,19 @@ no rule recognizes is `agent_failed`.
 | --- | --- | --- |
 | `tool.started` | The model called a tool | `tool`: its name; `callId`; `title`; `input` |
 | `tool.progress` | The tool reported progress | runtime-defined |
-| `tool.completed` | The tool returned | `tool`, `callId`, `title`, `output` |
+| `tool.completed` | The tool returned | `tool`, `callId`, `title`, `output`; `result: true` when the output became the session's result |
 | `tool.failed` | The tool raised an error | `tool`, `callId`, `message` |
 
 The exact fields come from the runtime's tool record; read them as optional
 and key a tool call on `callId` when it is present. The memory tools
 (`memory_save`, `memory_read`, `memory_list`) appear here like any other
 tool; the save itself is reported separately.
+
+A successful call of the agent's [result tool](/agents/tools#the-session-result)
+is recorded with `result: true`; its `output` is the validated value as JSON
+text, the same value `GET /sessions/<id>` returns parsed as `result.data`.
+The session writes this event when it commits the result, before the model
+sees the call succeed, and there is one per call.
 
 ### Memory
 
