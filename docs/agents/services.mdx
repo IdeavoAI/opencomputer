@@ -35,7 +35,12 @@ curl -X POST "$OC_API_URL/api/managed-agents/connections/google/link" \
 
 The response carries an `authorizationUrl`. Whoever opens it consents with
 their own account and it is connected under that label — they never sign in to
-OpenComputer. Omit `label` for `default`.
+OpenComputer.
+
+Omitting `label` here connects it as `default`, which is the label the examples
+below assume. **`default` is a literal name, not a fallback**: if you connect an
+account as `support`, a call that passes no `label` looks for one called
+`default` and gets a `404` even though `support` is the only account you have.
 
 ```bash
 # What is connected
@@ -108,8 +113,12 @@ export const unread = defineTool({
 });
 ```
 
-It returns the service's own response — status, headers and body — as `fetch`
-would, so a `403` for a missing scope stays distinguishable from a `404` for a
+Note what that counts. Gmail returns at most 100 message ids per page, so
+`messages.length` is the size of the first page, not the total — real counting
+means following `nextPageToken`. Most collection APIs behave this way.
+
+`callService` returns the service's own response — status, headers and body — as
+`fetch` would, so a `403` for a missing scope stays distinguishable from a `404` for a
 deleted message. Check `response.ok`; a model told only "it failed" will retry
 forever.
 
@@ -199,7 +208,7 @@ collections rather than asking for them in one call.
 
 | You see | It means | Do this |
 | --- | --- | --- |
-| `404 connection_not_found` | Nothing connected under that label | Connect one (step 1) |
+| `404 connection_not_found` | No account under **that label** — often a call with no `label` while the account was connected as something else | Pass the matching `label`, or connect one (step 1) |
 | `409 connection_alias_required` | Several accounts connected, no `label` given | Pass `label`; the message lists them |
 | `403` from the service | The consent is narrower than the call needs | Reconnect the account with wider access |
 | `listServices()` returns `[]` | The service is not declared | Add `useService("gmail")` |
