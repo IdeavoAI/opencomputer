@@ -2035,8 +2035,10 @@ export async function readProjectResources(
   const gatedTools: GatedToolManifest[] = [];
   for (const agent of agents) {
     for (const path of await typescriptFiles(resolve(agent.root, "tools"))) {
-      for (const toolId of definedGatedToolIds(await readFile(path, "utf8"))) {
-        gatedTools.push({ agentId: agent.localId, toolId });
+      for (const tool of definedTools(await readFile(path, "utf8"), path)) {
+        if (tool.gated) {
+          gatedTools.push({ agentId: agent.localId, toolId: tool.id });
+        }
       }
     }
     for (const path of await typescriptFiles(resolve(agent.root, "channels"))) {
@@ -2332,29 +2334,70 @@ function definedHttpConnections(
   return definitions;
 }
 
-function definedToolIds(source: string): string[] {
-  return [
-    ...source.matchAll(
-      /\bdefineTool(?:<[^>]+>)?\s*\(\s*\{[\s\S]*?\bname\s*:\s*["']([^"']+)["'][\s\S]*?\}\s*\)/g,
-    ),
-  ]
-    .map((match) => match[1]!)
-    .sort();
+interface DefinedTool {
+  readonly id: string;
+  /** Has preview() and apply(), so the model's call is a proposal. */
+  readonly gated: boolean;
+}
+
+/** Matches `preview: fn`, `preview(ctx) {}` and `async preview(ctx) {}` alike. */
+function hasMember(object: ts.ObjectLiteralExpression, name: string): boolean {
+  return object.properties.some((property) => {
+    if (
+      !ts.isPropertyAssignment(property) &&
+      !ts.isMethodDeclaration(property) &&
+      !ts.isShorthandPropertyAssignment(property)
+    ) {
+      return false;
+    }
+    const key = property.name;
+    return (
+      (!!key && ts.isIdentifier(key) && key.text === name) ||
+      (!!key && ts.isStringLiteral(key) && key.text === name)
+    );
+  });
 }
 
 /**
- * Gated tools are tools: the model sees them and calls them like any other.
- * They are listed separately as well so the platform knows a call to one is a
- * proposal, and that the tool has an `apply` to dispatch after a decision.
+ * Every tool a module defines, and whether it waits for approval.
+ *
+ * Read from the syntax tree rather than by regex, because gated-ness is no
+ * longer visible in the function's name — it is the presence of `preview` and
+ * `apply` on the object literal. A textual match would see those words inside
+ * a nested JSON Schema (a tool whose input has a property called `preview` is
+ * perfectly legal) and declare an ordinary tool gated, which the runtime then
+ * refuses to render at all.
  */
-function definedGatedToolIds(source: string): string[] {
-  return [
-    ...source.matchAll(
-      /\bdefineGatedTool(?:<[^>]+>)?\s*\(\s*\{[\s\S]*?\bname\s*:\s*["']([^"']+)["'][\s\S]*?\}\s*\)/g,
-    ),
-  ]
-    .map((match) => match[1]!)
-    .sort();
+function definedTools(source: string, path: string): DefinedTool[] {
+  const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
+  const tools: DefinedTool[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "defineTool"
+    ) {
+      const argument = node.arguments[0];
+      if (!argument || !ts.isObjectLiteralExpression(argument)) {
+        throw new Error(`${path} defineTool() requires an object literal`);
+      }
+      const id = literalStringValue(
+        objectProperty(argument, "name"),
+        `${path} tool name`,
+      );
+      tools.push({
+        id,
+        // Either half marks it gated; defineTool() rejects a lone one at run
+        // time. Treating a half-gate as ordinary here would let a tool that
+        // means to wait be registered as one that does not.
+        gated:
+          hasMember(argument, "preview") || hasMember(argument, "apply"),
+      });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return tools.sort((left, right) => left.id.localeCompare(right.id));
 }
 
 function staticModelSelections(
@@ -2494,16 +2537,14 @@ export const defineTool = (input) => {
   if (!String(input.description).trim()) throw new Error("defineTool requires a non-empty description");
   if (input.input && typeof input.input !== "object") throw new Error("defineTool input must be a JSON Schema object");
   if (input.output && typeof input.output !== "object") throw new Error("defineTool output must be a JSON Schema object");
-  return Object.freeze({ kind: "tool", version: 1, ...input, id: toolId, name: toolId });
-};
-export const defineGatedTool = (input) => {
-  const toolId = id(input.name, "defineGatedTool");
-  if (!/^[a-zA-Z0-9_-]+$/.test(toolId)) throw new Error("Invalid tool id " + JSON.stringify(toolId));
-  if (!String(input.description).trim()) throw new Error("defineGatedTool requires a non-empty description");
-  if (input.input && typeof input.input !== "object") throw new Error("defineGatedTool input must be a JSON Schema object");
-  if (input.output && typeof input.output !== "object") throw new Error("defineGatedTool output must be a JSON Schema object");
-  if (typeof input.preview !== "function") throw new Error("defineGatedTool requires a preview function");
-  if (typeof input.apply !== "function") throw new Error("defineGatedTool requires an apply function");
+  const gated = typeof input.preview === "function" || typeof input.apply === "function";
+  if (!gated) {
+    if (typeof input.run !== "function") throw new Error("defineTool requires run(), or preview() and apply() for a tool that waits for approval");
+    return Object.freeze({ kind: "tool", version: 1, ...input, id: toolId, name: toolId });
+  }
+  if (typeof input.preview !== "function") throw new Error("A tool with apply() also requires preview()");
+  if (typeof input.apply !== "function") throw new Error("A tool with preview() also requires apply()");
+  if (typeof input.run === "function") throw new Error("A tool has either run(), or preview() and apply() - not both; run() is written for you when the tool waits for approval");
   return Object.freeze({
     kind: "gated-tool", version: 1, ...input, id: toolId, name: toolId,
     async run(context) {
@@ -2796,27 +2837,14 @@ the product or support surface presented to users.
   const gatedTools: string[] = [];
   const toolModules: string[] = [];
   for (const candidate of toolSources) {
-    const ids = definedToolIds(candidate.source);
-    const calls = [
-      ...candidate.source.matchAll(/\bdefineTool(?:<[^>]+>)?\s*\(/g),
-    ].length;
-    if (ids.length !== calls) {
-      throw new Error(
-        `${candidate.path} must give every defineTool() a literal string name`,
+    // literalStringValue throws on a computed name, which is what used to be
+    // caught by counting calls against extracted ids.
+    const defined = definedTools(candidate.source, candidate.path);
+    if (defined.length > 0) {
+      reactiveTools.push(...defined.map((tool) => tool.id));
+      gatedTools.push(
+        ...defined.filter((tool) => tool.gated).map((tool) => tool.id),
       );
-    }
-    const gatedIds = definedGatedToolIds(candidate.source);
-    const gatedCalls = [
-      ...candidate.source.matchAll(/\bdefineGatedTool(?:<[^>]+>)?\s*\(/g),
-    ].length;
-    if (gatedIds.length !== gatedCalls) {
-      throw new Error(
-        `${candidate.path} must give every defineGatedTool() a literal string name`,
-      );
-    }
-    if (ids.length > 0 || gatedIds.length > 0) {
-      reactiveTools.push(...ids, ...gatedIds);
-      gatedTools.push(...gatedIds);
       toolModules.push(`../${compiledModulePath(candidate.path)}`);
     }
   }

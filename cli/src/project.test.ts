@@ -427,6 +427,108 @@ export default function Agent() {
   }
 });
 
+test("a tool is gated by having preview and apply, not by the words appearing in it", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-gated-shape-"));
+  try {
+    const initialized = await initializeAgentProject(resolve(parent, "app"));
+    await mkdir(resolve(initialized.agentRoot, "tools"), { recursive: true });
+    // An ordinary tool whose SCHEMA happens to describe fields called preview
+    // and apply. Gating used to be visible in the function's name; now it is
+    // the shape of the object, and a textual match would read this as gated
+    // and make the runtime refuse to render it.
+    await writeFile(
+      resolve(initialized.agentRoot, "tools", "drafts.ts"),
+      `import { defineTool } from "@opencomputer/agent";
+
+export const draft = defineTool({
+  name: "draft",
+  description: "Render a draft",
+  input: {
+    type: "object",
+    properties: {
+      preview: { type: "boolean", description: "Return a preview only" },
+      apply: { type: "boolean", description: "Apply the template" },
+    },
+  },
+  run({ input }) {
+    return { preview: Boolean(input.preview) };
+  },
+});
+`,
+    );
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { useTool } from "@opencomputer/agent";
+import { draft } from "./tools/drafts.js";
+
+export default function Agent() {
+  useTool(draft);
+  return "Draft when asked.";
+}
+`,
+    );
+
+    const runtime = await prepareAgent(initialized.agentRoot);
+    const manifest = JSON.parse(
+      await readFile(resolve(runtime, ".opencomputer", "reactive.json"), "utf8"),
+    ) as { tools: string[]; gatedTools: string[] };
+    assert.deepEqual(manifest.tools, ["draft"]);
+    assert.deepEqual(manifest.gatedTools, []);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("a tool cannot be half gated", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-half-gate-"));
+  try {
+    const initialized = await initializeAgentProject(resolve(parent, "app"));
+    await mkdir(resolve(initialized.agentRoot, "tools"), { recursive: true });
+    await writeFile(
+      resolve(initialized.agentRoot, "tools", "billing.ts"),
+      `import { defineTool } from "@opencomputer/agent";
+
+// apply() with no preview(): a person would be asked to approve something
+// they were never shown.
+export const cancel = defineTool({
+  name: "cancel",
+  description: "Cancel a subscription",
+  async apply() {
+    return { cancelled: true };
+  },
+});
+`,
+    );
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { useTool } from "@opencomputer/agent";
+import { cancel } from "./tools/billing.js";
+
+export default function Agent() {
+  useTool(cancel);
+  return "Cancel when asked.";
+}
+`,
+    );
+
+    // The compiler still records it as gated — either half means it intends to
+    // wait — so the module load is where the incomplete pair is caught.
+    const runtime = await prepareAgent(initialized.agentRoot);
+    const manifest = JSON.parse(
+      await readFile(resolve(runtime, ".opencomputer", "reactive.json"), "utf8"),
+    ) as { gatedTools: string[] };
+    assert.deepEqual(manifest.gatedTools, ["cancel"]);
+    await assert.rejects(
+      import(
+        `${pathToFileURL(resolve(runtime, "tools", "billing.js")).href}?test=${crypto.randomUUID()}`
+      ),
+      /A tool with apply\(\) also requires preview\(\)/,
+    );
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
 test("the compiler records secret-backed HTTP connections without secret values", async () => {
   const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-egress-"));
   const root = resolve(parent, "app");
@@ -708,9 +810,9 @@ test("a gated tool proposes instead of writing, and carries its apply", async ()
     await mkdir(resolve(initialized.agentRoot, "tools"), { recursive: true });
     await writeFile(
       resolve(initialized.agentRoot, "tools", "billing.ts"),
-      `import { defineGatedTool } from "@opencomputer/agent";
+      `import { defineTool } from "@opencomputer/agent";
 
-export const attach = defineGatedTool({
+export const attach = defineTool({
   name: "attach",
   description: "Move a customer onto a plan",
   input: { type: "object", properties: { plan: { type: "string" } } },

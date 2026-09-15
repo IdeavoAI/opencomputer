@@ -1153,13 +1153,50 @@ export function registerOutbox(
   });
 }
 
-export function defineTool<Output extends DataValue = DataValue>(input: {
+export interface ToolInput<Output extends DataValue = DataValue> {
   name: string;
   description: string;
   input?: ToolInputSchema;
   output?: ToolInputSchema;
   run(context: ToolExecutionContext): Output | Promise<Output>;
-}): ToolDefinition<Output> {
+}
+
+export interface GatedToolInput<Output extends DataValue = DataValue> {
+  name: string;
+  description: string;
+  input?: ToolInputSchema;
+  output?: ToolInputSchema;
+  /**
+   * Runs when the model calls the tool. Reads; never writes. What this returns
+   * is what a person sees and agrees to.
+   */
+  preview(context: ToolExecutionContext): ApprovalPreview | Promise<ApprovalPreview>;
+  /** Runs only after somebody approves, from the arguments previewed above. */
+  apply(context: GatedToolApplyContext): Output | Promise<Output>;
+}
+
+/**
+ * Define a tool.
+ *
+ * A tool that writes can wait for a person: supply `preview` and `apply`
+ * instead of `run`, and the model's call becomes a proposal rather than the
+ * write. `run` is then written for you — it builds the preview, records the
+ * proposal under the calling message's id so a retry is one approval rather
+ * than two, and returns a sentence telling the model to stop.
+ *
+ * Waiting for approval is a property of a tool, not a different kind of thing:
+ * the model sees it, and `useTool` selects it, exactly as for any other. What
+ * changes is only whether the tool's body runs now or after a decision.
+ */
+export function defineTool<Output extends DataValue = DataValue>(
+  input: ToolInput<Output>,
+): ToolDefinition<Output>;
+export function defineTool<Output extends DataValue = DataValue>(
+  input: GatedToolInput<Output>,
+): GatedToolDefinition<Output>;
+export function defineTool<Output extends DataValue = DataValue>(
+  input: ToolInput<Output> | GatedToolInput<Output>,
+): ToolDefinition<Output> | GatedToolDefinition<Output> {
   const id = identifier(input.name, "defineTool");
   if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
     throw new Error(
@@ -1175,70 +1212,52 @@ export function defineTool<Output extends DataValue = DataValue>(input: {
   if (input.output && typeof input.output !== "object") {
     throw new Error("defineTool output must be a JSON Schema object");
   }
-  return Object.freeze({
-    kind: "tool" as const,
-    version: 1 as const,
-    ...input,
-    id,
-    name: id,
-  });
-}
 
-/**
- * A tool whose write waits for a person.
- *
- * The model calls it and nothing is written. `preview` builds what the human
- * sees, the proposal is recorded against the conversation it came from, and
- * the model is told to stop. When somebody approves, `apply` runs with the
- * arguments that were on the card — not with whatever a second pass through
- * the model would produce.
- *
- * This is cooperative. A tool that wants to write in `preview` can; what the
- * platform guarantees is that `apply` runs once, from the stored arguments,
- * whether or not this session still exists by then.
- *
- * Give `apply` an idempotency key from `decision.id` if whatever you call
- * accepts one. A write that never reports back is recorded as unconfirmed
- * rather than failed, and that is only recoverable if running it again is
- * safe.
- */
-export function defineGatedTool<Output extends DataValue = DataValue>(input: {
-  name: string;
-  description: string;
-  input?: ToolInputSchema;
-  output?: ToolInputSchema;
-  preview(context: ToolExecutionContext): ApprovalPreview | Promise<ApprovalPreview>;
-  apply(context: GatedToolApplyContext): Output | Promise<Output>;
-}): GatedToolDefinition<Output> {
-  const id = identifier(input.name, "defineGatedTool");
-  if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
+  const candidate = input as Partial<ToolInput<Output>> &
+    Partial<GatedToolInput<Output>>;
+  const gated =
+    typeof candidate.preview === "function" ||
+    typeof candidate.apply === "function";
+
+  if (!gated) {
+    if (typeof candidate.run !== "function") {
+      throw new Error(
+        "defineTool requires run(), or preview() and apply() for a tool that waits for approval",
+      );
+    }
+    return Object.freeze({
+      kind: "tool" as const,
+      version: 1 as const,
+      ...(input as ToolInput<Output>),
+      id,
+      name: id,
+    });
+  }
+
+  // Half a gate is the dangerous shape: a preview with no apply asks for a
+  // decision nothing acts on, and an apply with no preview asks a person to
+  // approve something they were never shown.
+  if (typeof candidate.preview !== "function") {
+    throw new Error("A tool with apply() also requires preview()");
+  }
+  if (typeof candidate.apply !== "function") {
+    throw new Error("A tool with preview() also requires apply()");
+  }
+  if (typeof candidate.run === "function") {
     throw new Error(
-      "Tool IDs may contain only letters, numbers, underscores, and hyphens",
+      "A tool has either run(), or preview() and apply() — not both; run() is written for you when the tool waits for approval",
     );
   }
-  if (!input.description.trim()) {
-    throw new Error("defineGatedTool requires a non-empty description");
-  }
-  if (input.input && typeof input.input !== "object") {
-    throw new Error("defineGatedTool input must be a JSON Schema object");
-  }
-  if (input.output && typeof input.output !== "object") {
-    throw new Error("defineGatedTool output must be a JSON Schema object");
-  }
-  if (typeof input.preview !== "function") {
-    throw new Error("defineGatedTool requires a preview function");
-  }
-  if (typeof input.apply !== "function") {
-    throw new Error("defineGatedTool requires an apply function");
-  }
+
+  const definition = input as GatedToolInput<Output>;
   return Object.freeze({
     kind: "gated-tool" as const,
     version: 1 as const,
-    ...input,
+    ...definition,
     id,
     name: id,
     async run(context: ToolExecutionContext): Promise<string> {
-      const preview = approvalPreview(await input.preview(context), id);
+      const preview = approvalPreview(await definition.preview(context), id);
       // The tool call is the proposal's identity, so the same call recorded
       // twice — a retry, a resumed turn — is one approval, not two.
       const result = await publishApproval(id, {
@@ -1251,12 +1270,6 @@ export function defineGatedTool<Output extends DataValue = DataValue>(input: {
   });
 }
 
-/**
- * The projection the host recalled for this session's binding of `memory`.
- * It never fetches: a session without that binding fails the render here,
- * before inference. Calling it also selects the binding's permitted tools for
- * this model request; omitting it exposes none of them.
- */
 export function useMemory(memory: string | ResourceReference): MemoryProjection {
   const id = memoryId(
     typeof memory === "string" ? memory : memory.id,
