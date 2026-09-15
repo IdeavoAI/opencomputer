@@ -1311,6 +1311,25 @@ export async function runCommand(
     throw new Error("Use `opencomputer secrets set`, `list`, or `remove`.");
   }
 
+/**
+ * Which service a connected account is for.
+ *
+ * The listing reports the PROVIDER — `google` covers gmail, calendar, drive
+ * and sheets — but the disconnect route wants the service. The grant's scopes
+ * are what distinguish them.
+ */
+function serviceOfConnection(connection: {
+  provider: string;
+  scopes?: string[];
+}): string {
+  if (connection.provider === "github") return "github";
+  const scopes = (connection.scopes ?? []).join(" ");
+  if (scopes.includes("/auth/calendar")) return "calendar";
+  if (scopes.includes("/auth/spreadsheets")) return "sheets";
+  if (scopes.includes("/auth/drive")) return "drive";
+  return "gmail";
+}
+
   if (command === "connection" || command === "connections") {
     // Accounts the platform holds an OAuth credential for. Nothing secret
     // passes through here: `add` returns a link for the account's owner to
@@ -1358,9 +1377,13 @@ export async function runCommand(
         return;
       }
       for (const connection of connections) {
+        // The id is here because removing through the API needs it — the docs
+        // say to take it "from the listing", and without this that is only
+        // true of --json.
         process.stdout.write(
-          `${connection.label.padEnd(20)} ${connection.provider.padEnd(8)} ` +
-            `${connection.status.padEnd(12)} ${connection.displayName ?? ""}\n`,
+          `${connection.label.padEnd(18)} ${connection.provider.padEnd(7)} ` +
+            `${connection.status.padEnd(10)} ` +
+            `${(connection.displayName ?? "").padEnd(26)} ${connection.id}\n`,
         );
       }
       return;
@@ -1375,33 +1398,33 @@ export async function runCommand(
       if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
       const connections = await client.serviceConnections();
       // Accept either the alias a person remembers or the id the API returns.
-      const matches = connections.filter(
+      let matches = connections.filter(
         (connection) => connection.label === target || connection.id === target,
       );
+      if (service) {
+        matches = matches.filter(
+          (connection) => serviceOfConnection(connection) === service,
+        );
+      }
       if (!matches.length) {
         throw new Error(
-          `No connection named ${JSON.stringify(target)}. ` +
+          `No connection named ${JSON.stringify(target)}${service ? ` for ${service}` : ""}. ` +
             `Run \`opencomputer connection list\` to see them.`,
         );
       }
-      if (matches.length > 1 && !service) {
+      if (matches.length > 1) {
+        // Deleting the wrong account is not recoverable from here, so narrow
+        // it or refuse. The id in `connection list` is always unambiguous.
+        const services = [...new Set(matches.map(serviceOfConnection))];
         throw new Error(
-          `${matches.length} connections use the alias ${JSON.stringify(target)}. ` +
-            `Add --service <${SERVICES.join("|")}> to choose one.`,
+          `${matches.length} connections use the alias ${JSON.stringify(target)}` +
+            (services.length > 1
+              ? ` — add --service <${services.join("|")}> to choose one.`
+              : `. Remove it by connection id instead; \`opencomputer connection list\` shows them.`),
         );
       }
       const connection = matches[0]!;
-      // The delete route wants the service, not the provider; a google
-      // connection's scopes decide which one it is.
-      const resolved =
-        service ??
-        (connection.provider === "github"
-          ? "github"
-          : (SERVICES.find((candidate) =>
-              (connection.scopes ?? []).some((scope) =>
-                scope.includes(candidate === "calendar" ? "calendar" : candidate),
-              ),
-            ) ?? "gmail"));
+      const resolved = service ?? serviceOfConnection(connection);
       await client.disconnectServiceConnection({
         service: resolved,
         connectionId: connection.id,
