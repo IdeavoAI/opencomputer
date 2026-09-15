@@ -459,7 +459,7 @@ export type WebhookRequest = Record<string, unknown>;
 
 // ── GitHub connection ─────────────────────────────────────────────────────────
 
-/** A repository the environment's GitHub installation covers (per design 1c07584, backend in flight). */
+/** A repository the environment's GitHub installation covers. */
 export interface Repository {
   id: number | string;
   fullName: string;

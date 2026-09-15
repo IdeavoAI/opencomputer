@@ -409,9 +409,9 @@ export class GitHub {
 
   /**
    * `GET /projects/<p>/github/repositories?environment=`: the repositories
-   * the environment's installation covers, read live (per design 1c07584,
-   * backend in flight). `404 github_connection_not_found` without an
-   * installation; `502 github_unavailable` when GitHub fails.
+   * the environment's installation covers, read live from GitHub, at most
+   * 100 per page. `404 github_connection_not_found` without an installation;
+   * `502 github_unavailable` when GitHub fails.
    */
   repositories(projectId: string, query: ListRepositoriesQuery, options: CallOptions = {}): Promise<RepositoryPage> {
     return this.http.request(
