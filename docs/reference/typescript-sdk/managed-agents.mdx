@@ -65,6 +65,11 @@ try {
 The client does not retry. The API's idempotency keys make a retry safe, and
 the caller decides which calls to repeat and with which key.
 
+The client does not follow redirects. The API key is sent to `baseUrl` and
+to no other origin: a redirect answer fails the call with code `redirected`
+and the redirect's status, and nothing is sent to the address it named.
+Check `baseUrl` when you see it.
+
 ## Sessions
 
 | Method | Route | Returns |

@@ -4,8 +4,13 @@
 // Workers, Deno and browsers-with-a-proxy. No retries: the API's idempotency
 // keys make a caller's retry safe, and the caller knows which calls to
 // repeat; a client that retried on its own would hide that decision.
+//
+// No redirects either. The key is sent to the configured origin and nowhere
+// else: fetch runs with `redirect: "manual"`, and a 3xx answer is an error
+// with code `redirected`, because following it would carry the key to
+// whatever origin the response names.
 
-import { errorFromResponse } from "./errors.js";
+import { errorFromResponse, OpenComputerError } from "./errors.js";
 
 export const DEFAULT_BASE_URL = "https://app.opencomputer.dev/api/managed-agents";
 
@@ -63,12 +68,20 @@ export class Http {
       accept: "application/json",
       ...options.headers,
     };
-    const init: RequestInit = { method, headers, signal: options.signal };
+    const init: RequestInit = { method, headers, signal: options.signal, redirect: "manual" };
     if (options.body !== undefined) {
       headers["content-type"] = "application/json";
       init.body = JSON.stringify(options.body);
     }
     const response = await this.doFetch(this.url(path, options.query), init);
+    if (isRedirect(response)) {
+      throw new OpenComputerError(
+        response.status,
+        "redirected",
+        `${method} ${path} was answered with a redirect (${String(response.status)}); ` +
+          "the client does not follow redirects with the API key. Check baseUrl.",
+      );
+    }
     const body = await readJson(response);
     if (!response.ok) throw errorFromResponse(response.status, body, response.headers);
     return { status: response.status, body: body as T, headers: response.headers };
@@ -78,6 +91,15 @@ export class Http {
   async request<T>(method: string, path: string, options: RequestOptions = {}): Promise<T> {
     return (await this.send<T>(method, path, options)).body;
   }
+}
+
+/**
+ * A redirect as fetch reports it under `redirect: "manual"`: the 3xx answer
+ * itself, or on browsers an opaque response of type `opaqueredirect` whose
+ * status reads 0.
+ */
+function isRedirect(response: Response): boolean {
+  return response.type === "opaqueredirect" || (response.status >= 300 && response.status < 400);
 }
 
 async function readJson(response: Response): Promise<unknown> {
