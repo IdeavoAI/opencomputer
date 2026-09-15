@@ -221,11 +221,13 @@ Each turn is:
 | `failure` | `{ code, message }` from `turn.failed` |
 
 Tool calls are keyed on the runtime's `callId`, so a `tool.completed` updates
-the entry its `tool.started` created rather than adding one. When a turn ends,
-every call still `running` is settled with the turn: `completed` when the turn
-completed, `failed` when it failed, `cancelled` when it was interrupted. A
-settled turn therefore never shows a running call. An activity timeline
-renders `turns` directly:
+the entry its `tool.started` created rather than adding one. A call its turn
+ended before it completed is `failed`: the log records a `tool.failed` for it
+with `settledBy` naming the turn's end ([Session events](/agents/events#tools)).
+Should a log carry no such record, the hook settles every call still
+`running` when the turn ends: `completed` when the turn completed, `failed`
+when it failed, `cancelled` when it was interrupted. A settled turn therefore
+never shows a running call. An activity timeline renders `turns` directly:
 
 ```tsx
 {turns.map((turn) => (

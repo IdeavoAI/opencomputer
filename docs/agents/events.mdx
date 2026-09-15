@@ -102,7 +102,7 @@ no rule recognizes is `agent_failed`.
 | `tool.started` | The model called a tool | `tool`: its name; `callId`; `title`; `input`: the arguments as a JSON value |
 | `tool.progress` | The tool reported progress | runtime-defined |
 | `tool.completed` | The tool returned | `tool`, `callId`, `title`, `output`: what the tool returned as a JSON value; `result: true` when the output became the session's result |
-| `tool.failed` | The tool raised an error | `tool`, `callId`, `message` |
+| `tool.failed` | The tool raised an error, or its turn ended before it completed | `tool`, `callId`, `title`, `message`; `settledBy` when the turn's end settled the call: `turn.completed`, `turn.failed` or `turn.cancelled` |
 
 The exact fields come from the runtime's tool record; read them as optional
 and key a tool call on `callId` when it is present. The memory tools
@@ -118,11 +118,14 @@ same JSON value `GET /sessions/<id>` returns as `result.data`. The session
 writes this event when it commits the result, before the model sees the call
 succeed, and there is one per call.
 
-A terminal turn event, `turn.completed`, `turn.failed` or `turn.cancelled`,
-settles every tool call of the turn that has no completion of its own. The
-log records a `tool.completed` or `tool.failed` per call while the runtime is
-connected; a call without one ended with its turn, and the turn's outcome is
-the call's outcome.
+Every tool call ends in the log. The runtime reports a `tool.completed` or
+`tool.failed` per call; when a turn ends with a call still open, whether
+the turn completed, failed or was cancelled, the session records a
+`tool.failed` for that call ahead of the terminal turn event, in the same
+write, with `settledBy` naming the terminal event (`turn.completed`,
+`turn.failed` or `turn.cancelled`) and a `message` saying the turn ended
+first. A consumer therefore never sees a settled turn with a running call;
+one that keys rows on `callId` needs no rule of its own for the turn's end.
 
 ### Memory
 

@@ -335,6 +335,18 @@ stopped, and the call fails as a tool error the model sees: it names the
 command and the timeout and carries the output so far. The turn continues,
 and files the command wrote before it was stopped remain.
 
+A command counts as stopped only once that is confirmed: every process it
+started, detached ones included, is gone, or the computer itself was
+replaced. When the computer stops answering while a command runs, its
+outcome is unknown, and the call fails with that as the reason; the model
+is never told a command was stopped when that was not confirmed. That
+computer runs no further command until the unknown one is confirmed
+stopped or the computer is replaced by a fresh one with the session's
+workspace, which the next command does on its own. The same rule settles
+an [interrupt](/agents/api#end-and-interrupt): the turn is cancelled only
+after its commands are confirmed stopped, and a stop that cannot be
+confirmed replaces the computer.
+
 ## Tools versus skills and MCP
 
 - A tool executes TypeScript you own.

@@ -95,6 +95,12 @@ identifies the session within your organization:
   new key.
 - `503 memory_admission_unconfirmed` means the memory grants were not
   confirmed in time. Retry with the same key; the retry resumes the wait.
+- `503 session_publication_unconfirmed` means the session exists but its
+  row in the list was not confirmed in time; `error.sessionId` names it.
+  Retry with the same key and the same body until the answer is `201` or
+  `200`. A success means [`GET /sessions`](#get-and-list) reflects the
+  session; the platform keeps publishing the row in the background either
+  way.
 
 Other codes: `400 invalid_environment`, `400 invalid_memory_binding`,
 `400 invalid_labels`, `404 deployment_not_found`, `409 deployment_not_promoted`
@@ -177,6 +183,13 @@ curl -X PATCH 'https://app.opencomputer.dev/api/managed-agents/sessions/<session
 The session's `labelsUpdatedAt` records the change. A patch that would exceed
 the bounds, or a key or value that does not fit them, is `400 invalid_labels`
 and changes nothing. Labels can be changed on an ended session.
+
+A `200` means the list reflects the change: the session's row carries the
+new labels and the filters see them. `503 session_publication_unconfirmed`
+(with `error.sessionId`) means the labels are recorded on the session but
+the row was not confirmed in time; retry the same patch until it answers
+`200`. The platform keeps publishing the row in the background either way,
+and repeating the patch is safe because each key takes the last write.
 
 ### End and interrupt
 
