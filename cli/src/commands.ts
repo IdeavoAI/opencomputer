@@ -1311,6 +1311,109 @@ export async function runCommand(
     throw new Error("Use `opencomputer secrets set`, `list`, or `remove`.");
   }
 
+  if (command === "connection" || command === "connections") {
+    // Accounts the platform holds an OAuth credential for. Nothing secret
+    // passes through here: `add` returns a link for the account's owner to
+    // open, and the token is minted and refreshed server-side.
+    const SERVICES = ["gmail", "calendar", "drive", "sheets", "github"];
+    const action = args.shift();
+
+    if (action === "add" || action === "connect") {
+      const service = args.shift();
+      if (!service || !SERVICES.includes(service)) {
+        throw new Error(`Use \`opencomputer connection add <${SERVICES.join("|")}>\``);
+      }
+      const label = option(args, "--alias") ?? option(args, "--label");
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      const result = await client.linkServiceConnection({ service, label });
+      if (globals.json) {
+        printJSON(result);
+        return;
+      }
+      if (!result.authorizationUrl) {
+        process.stdout.write(
+          `${service} is already connected as ${result.label}.\n`,
+        );
+        return;
+      }
+      // The person who opens this consents with their own account, and it is
+      // connected under this label — they never sign in to OpenComputer.
+      process.stdout.write(
+        `Connect ${service} as "${result.label}" by opening:\n\n  ${result.authorizationUrl}\n\n` +
+          `Send it to whoever owns the account. Run \`opencomputer connection list\` to confirm.\n`,
+      );
+      return;
+    }
+
+    if (action === "list" || action === "ls" || action === undefined) {
+      const connections = await client.serviceConnections();
+      if (globals.json) {
+        printJSON(connections);
+        return;
+      }
+      if (!connections.length) {
+        process.stdout.write(
+          "No connected accounts. Add one with `opencomputer connection add gmail`.\n",
+        );
+        return;
+      }
+      for (const connection of connections) {
+        process.stdout.write(
+          `${connection.label.padEnd(20)} ${connection.provider.padEnd(8)} ` +
+            `${connection.status.padEnd(12)} ${connection.displayName ?? ""}\n`,
+        );
+      }
+      return;
+    }
+
+    if (action === "remove" || action === "disconnect") {
+      const target = args.shift();
+      if (!target) {
+        throw new Error("Use `opencomputer connection remove <alias|connection-id>`");
+      }
+      const service = option(args, "--service");
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      const connections = await client.serviceConnections();
+      // Accept either the alias a person remembers or the id the API returns.
+      const matches = connections.filter(
+        (connection) => connection.label === target || connection.id === target,
+      );
+      if (!matches.length) {
+        throw new Error(
+          `No connection named ${JSON.stringify(target)}. ` +
+            `Run \`opencomputer connection list\` to see them.`,
+        );
+      }
+      if (matches.length > 1 && !service) {
+        throw new Error(
+          `${matches.length} connections use the alias ${JSON.stringify(target)}. ` +
+            `Add --service <${SERVICES.join("|")}> to choose one.`,
+        );
+      }
+      const connection = matches[0]!;
+      // The delete route wants the service, not the provider; a google
+      // connection's scopes decide which one it is.
+      const resolved =
+        service ??
+        (connection.provider === "github"
+          ? "github"
+          : (SERVICES.find((candidate) =>
+              (connection.scopes ?? []).some((scope) =>
+                scope.includes(candidate === "calendar" ? "calendar" : candidate),
+              ),
+            ) ?? "gmail"));
+      await client.disconnectServiceConnection({
+        service: resolved,
+        connectionId: connection.id,
+      });
+      if (globals.json) printJSON({ removed: connection.id, label: connection.label });
+      else process.stdout.write(`Removed ${connection.label} (${resolved}).\n`);
+      return;
+    }
+
+    throw new Error("Use `opencomputer connection add|list|remove`.");
+  }
+
   if (command === "model-access") {
     const action = args.shift();
     if (action === "connect") {
