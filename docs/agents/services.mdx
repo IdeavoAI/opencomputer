@@ -70,8 +70,21 @@ opencomputer connection list
 ```bash API
 curl "$OC_API_URL/api/managed-agents/connections" \
   -H "x-api-key: $OPENCOMPUTER_API_KEY"
+
+# The listing reports a stored status. To find out whether a `pending`
+# account has since been authorized, ask the status route — it is the one
+# that re-checks with the provider, and records the answer.
+curl "$OC_API_URL/api/managed-agents/connections/google/status?service=gmail&label=support" \
+  -H "x-api-key: $OPENCOMPUTER_API_KEY"
 ```
 </CodeGroup>
+
+<Note>
+`status` in the listing is stored, not live. An account someone authorized a
+minute ago can still read `pending` there until something re-checks it. The CLI
+does that for you; over the API, call the status route above. Agents are
+unaffected — `listServices()` reconciles before it answers.
+</Note>
 
 **Disconnecting one.** The CLI takes the label; the API takes the connection id
 from the listing above, and the service rather than the provider.
@@ -254,7 +267,7 @@ collections rather than asking for them in one call.
 | `409 connection_alias_required` | Several accounts connected, no `label` given | Pass `label`; the message lists them |
 | `403` from the service | The consent is narrower than the call needs | Reconnect the account with wider access |
 | `listServices()` returns `[]` | The service is not declared | Add `useService("gmail")` |
-| A connection stays `pending` | Nobody has opened the link yet, or it expired | `opencomputer connection list` re-checks pending accounts with the provider, so its answer is current |
+| A connection stays `pending` | Nobody opened the link, it expired — or the listing's stored status is stale | `opencomputer connection list` re-checks for you; over the API call the status route |
 | A header you set is ignored | It is not in the allowlist above | Nothing — it cannot be sent |
 | Throws *managed connections are unavailable* | No connection layer | You are running outside the platform |
 
