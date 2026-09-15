@@ -1,12 +1,9 @@
 // The shapes of the management API (docs/agents/api.mdx) and of the session
 // event log (docs/agents/events.mdx), as the client sends and returns them.
-// Field names are the API's own; nothing is renamed at the boundary.
-//
-// Fields marked "per design 1c07584, backend in flight" belong to routes and
-// objects the API is gaining (session labels, filtered listing, the typed
-// result, turn payloads, repository listing). They are typed here so an
-// application compiles against the final shape; until the backend lands, the
-// API leaves them absent and the routes answer 404 or 400.
+// Field names are the API's own; nothing is renamed at the boundary. Fields
+// the docs list as present on every response are typed optional where an
+// older session or row may still lack them; the transport (shapes.ts) passes
+// what the API sends and never fills a field in.
 
 import type { MemoryBindings, SessionMemoryBinding } from "./memory.js";
 import type { TurnOutcomeDelivery } from "./event-subscriptions.js";
@@ -24,8 +21,7 @@ export type DataValue = string | number | boolean | null | DataValue[] | { [key:
 
 /**
  * Where a session is in its life. `stopping` is the state between an
- * interrupt and the settlement of the stopped turn's work (per design
- * 1c07584, backend in flight).
+ * interrupt and the settlement of the stopped turn's work.
  */
 export type SessionStatus =
   | "new"
@@ -54,7 +50,7 @@ export interface Turn {
   input: string;
   mode: TurnMode;
   status: TurnStatus;
-  /** The structured input sent with the turn (per design 1c07584, backend in flight). */
+  /** The structured input sent with the turn. */
   payload?: DataValue;
   /** Present when an event subscription selected the turn's outcome. */
   deliveries?: TurnOutcomeDelivery[];
@@ -64,7 +60,7 @@ export interface Turn {
 
 /**
  * The latest committed output of the agent's result tool, with its
- * provenance (per design 1c07584, backend in flight).
+ * provenance.
  */
 export interface SessionResult {
   /** The turn whose tool call reported it. */
@@ -94,13 +90,13 @@ export interface Session {
   memory?: SessionMemoryBinding[];
   /** Every turn, oldest first. */
   turns: Turn[];
-  /** Per design 1c07584, backend in flight. */
+  /** Your metadata on the session; equality filters on the list. */
   labels?: SessionLabels;
-  /** Per design 1c07584, backend in flight. */
+  /** When the labels last changed. */
   labelsUpdatedAt?: string;
-  /** Monotonic; every listed mutation increments it (per design 1c07584, backend in flight). */
+  /** Monotonic; every listed mutation increments it. */
   revision?: number;
-  /** Per design 1c07584, backend in flight. */
+  /** The latest committed output of the result tool, or `null` when none was committed. */
   result?: SessionResult | null;
   createdAt: string;
   updatedAt: string;
@@ -127,7 +123,7 @@ export interface CreateSessionParams {
   /** Bindings keyed by resource id, at most eight. */
   memory?: MemoryBindings;
   source?: SessionSource;
-  /** Applied at creation and ignored on an idempotent replay (per design 1c07584, backend in flight). */
+  /** Applied at creation and ignored on an idempotent replay. */
   labels?: SessionLabels;
 }
 
@@ -155,11 +151,11 @@ export interface SendTurnParams {
   idempotencyKey?: string;
   /** `queue` (default), `steer` or `interrupt`. */
   mode?: TurnMode;
-  /** Structured input the agent reads as `useInput().payload`; at most 32 KB of JSON (per design 1c07584, backend in flight). */
+  /** Structured input the agent reads as `useInput().payload`; at most 32 KB of JSON. */
   payload?: DataValue;
 }
 
-/** What a session's activity looks like from a list row (per design 1c07584, backend in flight). */
+/** What a session's activity looks like from a list row. */
 export interface SessionActivity {
   activeTurnId: string | null;
   /** Turns admitted and not yet started. */
@@ -169,8 +165,7 @@ export interface SessionActivity {
 
 /**
  * A row of `GET /sessions`. Rows carry no `turns` and no `memory`;
- * `GET /sessions/<id>` has those. `activity`, `revision`, `result` and
- * `labels` are per design 1c07584, backend in flight.
+ * `GET /sessions/<id>` has those.
  */
 export interface SessionSummary {
   id: string;
@@ -189,11 +184,7 @@ export interface SessionSummary {
   result?: SessionResult | null;
 }
 
-/**
- * Filters and paging for `GET /sessions` (per design 1c07584, backend in
- * flight; the API without them returns the fifty most recently updated
- * sessions and ignores nothing, so pass none until they land).
- */
+/** Filters and paging for `GET /sessions`; any other parameter is `400 invalid_query`. */
 export interface ListSessionsQuery {
   project?: string;
   environment?: Environment;
@@ -212,7 +203,7 @@ export interface SessionPage {
   nextCursor: string | null;
 }
 
-/** Body of `PATCH /sessions/<id>/labels` (per design 1c07584, backend in flight). */
+/** Body of `PATCH /sessions/<id>/labels`. */
 export interface SetLabelsParams {
   set?: SessionLabels;
   unset?: string[];
@@ -274,7 +265,7 @@ export type SessionEvent =
       data: {
         reason: "interrupted" | (string & {});
         replacementTurnId?: string;
-        /** How long after the interrupt the turn settled, once the commands it had started were stopped (per design 1c07584, backend in flight). */
+        /** How long after the interrupt the turn settled, once the commands it had started were stopped. */
         settledAfterMs?: number;
         /** How many commands were stopped for the turn to settle. */
         operationsSettled?: number;
@@ -295,11 +286,21 @@ export type SessionEvent =
         callId?: string;
         title?: string;
         output?: DataValue;
-        /** `true` on the call that committed the session's result (per design 1c07584, backend in flight). */
+        /** `true` on the call that committed the session's result. */
         result?: boolean;
       };
     })
-  | (EventBase & { type: "tool.failed"; data: { tool: string; callId?: string; title?: string; message?: string } })
+  | (EventBase & {
+      type: "tool.failed";
+      data: {
+        tool: string;
+        callId?: string;
+        title?: string;
+        message?: string;
+        /** Present when the turn's end settled a call that never completed: the terminal event that did it. */
+        settledBy?: "turn.completed" | "turn.failed" | "turn.cancelled";
+      };
+    })
   | (EventBase & { type: "memory.saved"; data: { resource: string; documentId: string; revision: string; bytes: number } })
   | (EventBase & {
       type: "model.route_resolved";

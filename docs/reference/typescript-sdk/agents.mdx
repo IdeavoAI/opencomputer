@@ -47,10 +47,12 @@ field names are the API's own.
 
 Every failed call throws `OpenComputerError` with `code`, `status` and
 `message`. `code` is the API's stable code when the body carried one
-(`idempotency_conflict`, `session_ended`, `insufficient_credits`); when the
-body had only text, it is derived from the status: `unauthorized`,
-`forbidden`, `not_found`, `conflict`, `rate_limited`, `unavailable` for `5xx`,
-`request_failed` otherwise. A `429` also carries `retryAfter` in seconds.
+(`idempotency_conflict`, `session_ended`, `insufficient_credits`,
+`session_publication_unconfirmed`); when the body had only text, it is
+derived from the status: `unauthorized`, `forbidden`, `not_found`,
+`conflict`, `rate_limited`, `unavailable` for `5xx`, `request_failed`
+otherwise. A `429` also carries `retryAfter` in seconds, and an error the
+API tied to a session carries `sessionId`.
 
 ```typescript
 try {
@@ -63,7 +65,25 @@ try {
 ```
 
 The client does not retry. The API's idempotency keys make a retry safe, and
-the caller decides which calls to repeat and with which key.
+the caller decides which calls to repeat and with which key. The one error
+that asks for a retry, `503 session_publication_unconfirmed` from
+`sessions.create` or `sessions.setLabels`, is thrown like any other: the
+session exists, or its labels are recorded, but its row in the list was not
+confirmed in time, and `error.sessionId` names it. Repeat the same call, with
+the same `idempotencyKey` and params on `create` or the same patch on
+`setLabels`, until it returns; a return means the list reflects the change
+([Management API](/agents/api#create)).
+
+```typescript
+for (;;) {
+  try {
+    return await oc.sessions.create(params, { idempotencyKey: taskId });
+  } catch (error) {
+    if (!(error instanceof OpenComputerError) || error.code !== "session_publication_unconfirmed") throw error;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+}
+```
 
 The client does not follow redirects. The API key is sent to `baseUrl` and
 to no other origin: a redirect answer fails the call with code `redirected`

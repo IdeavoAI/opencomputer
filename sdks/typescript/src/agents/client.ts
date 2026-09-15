@@ -176,7 +176,7 @@ export class Sessions {
     });
   }
 
-  /** `PATCH /sessions/<id>/labels`: per-key last-write-wins (per design 1c07584, backend in flight). */
+  /** `PATCH /sessions/<id>/labels`: per-key last-write-wins. */
   setLabels(sessionId: string, params: SetLabelsParams, options: CallOptions = {}): Promise<Session> {
     return this.http.request("PATCH", `/sessions/${segment(sessionId)}/labels`, shapes.session, {
       body: params,

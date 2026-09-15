@@ -14,9 +14,11 @@ published version that has it, `1.1.1`.
   (`sessions`, `sessions.turns`, `sessions.events`, `projects`,
   `projects.memory`, `projects.webhooks`, `projects.eventSubscriptions`,
   `projects.github`, `agents`, `deployments`), with one `OpenComputerError`
-  of `{ code, status, message }`. Its module graph has no Node dependency and
-  runs nothing at import, so it loads in Cloudflare Workers without Node
-  compatibility.
+  of `{ code, status, message }`, plus `retryAfter` from a `429` and
+  `sessionId` when the API tied the failure to a session
+  (`session_publication_unconfirmed`). The client retries nothing and follows
+  no redirect. Its module graph has no Node dependency and runs nothing at
+  import, so it loads in Cloudflare Workers without Node compatibility.
 - `startSessionOnDocument`, the memory types and the event subscription types
   move to that subpath; `oc.sessions.startOnDocument` is the same call on the
   client. Its `NotFoundError` and `ConflictError` become `OpenComputerError`

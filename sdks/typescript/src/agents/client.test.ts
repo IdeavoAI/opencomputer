@@ -290,6 +290,44 @@ describe("OpenComputer client", () => {
     expect((await client.sessions.turns.send("ses_1", { input: "again" })).status).toBe("stopping");
   });
 
+  // Create and setLabels answer 503 session_publication_unconfirmed when the
+  // session, or its label change, is recorded but its list row is not yet
+  // confirmed. The client throws it with the session id and does not retry:
+  // the caller repeats the same call under the same key, and the replay is
+  // what publishes again.
+  it("surfaces session_publication_unconfirmed with the session id and leaves the retry to the caller", async () => {
+    let creates = 0;
+    const unconfirmed = () =>
+      Response.json(
+        { error: { code: "session_publication_unconfirmed", message: "not listed yet; retry", sessionId: "ses_1" } },
+        { status: 503 },
+      );
+    const api = fakeApi({
+      "POST /api/managed-agents/sessions": () =>
+        ++creates === 1 ? unconfirmed() : Response.json({ session: { id: "ses_1", status: "new", createdAt: "t" } }, { status: 200 }),
+      "PATCH /api/managed-agents/sessions/ses_1/labels": unconfirmed,
+    });
+    const client = oc(api);
+    const first = await client.sessions.create({ agentId: "worker@development" }, { idempotencyKey: "task_1" }).catch((cause: unknown) => cause);
+    expect(first).toBeInstanceOf(OpenComputerError);
+    expect(first).toMatchObject({ code: "session_publication_unconfirmed", status: 503, sessionId: "ses_1", message: "not listed yet; retry" });
+    expect(api.calls).toHaveLength(1);
+    // The caller's retry, same key and body: the replay answers 200, not created.
+    const retry = await client.sessions.create({ agentId: "worker@development" }, { idempotencyKey: "task_1" });
+    expect(retry).toMatchObject({ session: { id: "ses_1" }, created: false });
+    expect(api.calls).toHaveLength(2);
+    expect(api.calls[1].headers["idempotency-key"]).toBe("task_1");
+    expect(api.calls[1].body).toEqual(api.calls[0].body);
+    const patch = await client.sessions.setLabels("ses_1", { set: { outcome: "merged" } }).catch((cause: unknown) => cause);
+    expect(patch).toBeInstanceOf(OpenComputerError);
+    expect(patch).toMatchObject({ code: "session_publication_unconfirmed", status: 503, sessionId: "ses_1" });
+    expect(api.calls).toHaveLength(3);
+    // Errors the API does not tie to a session carry no sessionId.
+    const untied = (await client.sessions.get("missing").catch((cause: unknown) => cause)) as OpenComputerError;
+    expect(untied.code).toBe("not_found");
+    expect(untied.sessionId).toBeUndefined();
+  });
+
   it("honours a custom base URL and requires a key", () => {
     const api = fakeApi();
     const client = new OpenComputer({ apiKey: "k", baseUrl: "https://edge.example.test/mgmt/", fetch: api.fetch });

@@ -29,7 +29,7 @@ export {
   type StartSessionOnDocumentResult,
 } from "./client.js";
 export { sessionIdempotencyKey, type StartOnDocumentParams, type StartOnDocumentResult } from "./start-on-document.js";
-export { OpenComputerError, type ApiErrorEnvelope } from "./errors.js";
+export { OpenComputerError, type ApiErrorEnvelope, type OpenComputerErrorDetails } from "./errors.js";
 export { DEFAULT_BASE_URL, type HttpOptions } from "./http.js";
 export type * from "./types.js";
 export type {
