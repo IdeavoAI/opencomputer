@@ -99,7 +99,7 @@ describe("OpenComputer client", () => {
     expect(api.last().path).toBe("/api/managed-agents/sessions");
   });
 
-  it("sends a turn with its key, mode and payload, and reads the receipt from 202 and 200", async () => {
+  it("sends a turn with its key as the Idempotency-Key header, its mode and payload, and reads the receipt from 202 and 200", async () => {
     let duplicate = false;
     const api = fakeApi({
       "POST /api/managed-agents/sessions/ses_1/turns": () =>
@@ -112,15 +112,17 @@ describe("OpenComputer client", () => {
       payload: { repo: "acme/web", ref: "main" },
     });
     expect(receipt).toEqual({ turnId: "turn_1", status: "queued", duplicate: false });
+    // One rule for both routes: the key is the header, never the body.
+    expect(api.last().headers["idempotency-key"]).toBe("task_1/start");
     expect(api.last().body).toEqual({
       input: "Fix the login page.",
-      idempotencyKey: "task_1/start",
       payload: { repo: "acme/web", ref: "main" },
     });
     duplicate = true;
     expect(await client.sessions.turns.send("ses_1", { input: "again", mode: "steer" })).toEqual({
       turnId: "turn_1", status: "running", duplicate: true,
     });
+    expect(api.last().headers["idempotency-key"]).toBeUndefined();
     expect(api.last().body).toEqual({ input: "again", mode: "steer" });
   });
 

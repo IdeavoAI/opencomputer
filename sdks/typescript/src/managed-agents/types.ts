@@ -148,7 +148,10 @@ export interface TurnReceipt {
 export interface SendTurnParams {
   /** The user text. Required, not empty. */
   input: string;
-  /** The same key returns the existing turn; without one every request starts a turn. */
+  /**
+   * Sent as the `Idempotency-Key` header. The same key returns the existing
+   * turn; without one every request starts a turn.
+   */
   idempotencyKey?: string;
   /** `queue` (default), `steer` or `interrupt`. */
   mode?: TurnMode;

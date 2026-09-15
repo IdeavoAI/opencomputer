@@ -86,14 +86,19 @@ export interface ListDocumentsOptions extends EnvironmentOptions {
 export class Turns {
   constructor(private readonly http: Http) {}
 
-  /** `POST /sessions/<id>/turns`: admits a turn; follow it in the event log. */
+  /**
+   * `POST /sessions/<id>/turns`: admits a turn; follow it in the event log.
+   * The key travels as the `Idempotency-Key` header, the one rule for both
+   * create and send; the body field of the same name is the form a browser
+   * send proxied through the application's own server uses.
+   */
   async send(sessionId: string, params: SendTurnParams, options: CallOptions = {}): Promise<TurnReceipt> {
     const body: Record<string, unknown> = { input: params.input };
-    if (params.idempotencyKey !== undefined) body.idempotencyKey = params.idempotencyKey;
     if (params.mode !== undefined) body.mode = params.mode;
     if (params.payload !== undefined) body.payload = params.payload;
     const answer = await this.http.send("POST", `/sessions/${segment(sessionId)}/turns`, shapes.turnReceipt, {
       body,
+      headers: params.idempotencyKey !== undefined ? { "idempotency-key": params.idempotencyKey } : undefined,
       signal: options.signal,
     });
     // The receipt says what the platform persisted. A repeated key answers

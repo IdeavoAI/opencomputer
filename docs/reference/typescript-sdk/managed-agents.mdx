@@ -103,7 +103,8 @@ validate.
 
 `create` takes `agentId`, `deploymentId`, `environment`, `memory`, `source`
 and `labels` as [documented](/agents/api#create). `turns.send` takes `input`,
-`idempotencyKey`, `mode` and `payload`. Its receipt carries the turn's
+`idempotencyKey`, `mode` and `payload`; both `create` and `turns.send` send
+the key as the `Idempotency-Key` header. The receipt carries the turn's
 persisted `status`: `queued` or `running` for a new turn, and for a repeated
 key the existing turn's status, `completed`, `failed` or `cancelled` once it
 has settled, with `duplicate: true`. The client maps nothing, so a retry

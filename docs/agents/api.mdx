@@ -204,18 +204,25 @@ returned unchanged.
 curl -X POST 'https://app.opencomputer.dev/api/managed-agents/sessions/<session-id>/turns' \
   -H 'x-api-key: <api-key>' \
   -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: message-42' \
   -d '{
     "input": "Plan the workshop.",
-    "idempotencyKey": "message-42",
     "mode": "queue",
     "payload": { "workshopId": "ws_812", "audience": "backend" }
   }'
 ```
 
+`Idempotency-Key` is the one rule on both routes: it identifies this request,
+a repeat returns the existing turn, and a different request under the same
+key is refused (below). Without one every request starts a turn. The body
+field `idempotencyKey` carries the same key for a send that a browser makes
+through your own server, where the header is the server's to set; when both
+are present they must be equal, else `400 invalid_turn`.
+
 | Field | Meaning |
 | --- | --- |
 | `input` | The user text for this turn. Required, not empty. |
-| `idempotencyKey` | Optional. Identifies this request: a repeat returns the existing turn, a different request under the same key is refused (below). Without one every request starts a turn. |
+| `idempotencyKey` | Optional. The key in body form, for a proxied browser send; equal to the header when both are present. |
 | `mode` | `queue` (default): run after earlier turns. `steer`: deliver into the running turn when the runtime supports it, otherwise queue. `interrupt`: cancel running turns and run next. |
 | `payload` | Optional. A JSON value for the agent, at most 32 KB encoded. It reaches the agent as [`useInput().payload`](/agents/inputs) with `source: "user"`, next to the text, and is recorded on the turn's `message.received` event. The text stays the message; the payload is structured context the agent reads. |
 
@@ -251,7 +258,7 @@ acknowledged:
    `Idempotency-Key: <submission-id>`, the `deploymentId` and `environment`.
    A retry then carries the deployment the submission was composed against,
    even if the alias has moved since.
-2. `POST /sessions/<id>/turns` with `idempotencyKey: <submission-id>/start`,
+2. `POST /sessions/<id>/turns` with `Idempotency-Key: <submission-id>/start`,
    the text and the `payload`.
 
 Keep the submission (its id, the pinned deployment, the text and the
