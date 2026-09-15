@@ -1343,8 +1343,11 @@ function serviceOfConnection(connection: {
         throw new Error(`Use \`opencomputer connection add <${SERVICES.join("|")}>\``);
       }
       const label = option(args, "--alias") ?? option(args, "--label");
+      const noWait = flag(args, "--no-wait");
       if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
       const result = await client.linkServiceConnection({ service, label });
+      // --json is for scripting, where blocking for a consent that may never
+      // come is the wrong default.
       if (globals.json) {
         printJSON(result);
         return;
@@ -1355,17 +1358,72 @@ function serviceOfConnection(connection: {
         );
         return;
       }
-      // The person who opens this consents with their own account, and it is
-      // connected under this label — they never sign in to OpenComputer.
+      // Deliberately not opened for you: the account often belongs to someone
+      // else, and this runs on servers and in CI as readily as on a laptop.
       process.stdout.write(
-        `Connect ${service} as "${result.label}" by opening:\n\n  ${result.authorizationUrl}\n\n` +
-          `Send it to whoever owns the account. Run \`opencomputer connection list\` to confirm.\n`,
+        `Connect ${service} as "${result.label}" by opening:\n\n  ${result.authorizationUrl}\n\n`,
+      );
+      if (noWait) {
+        process.stdout.write(
+          `Run \`opencomputer connection list\` once it has been authorized.\n`,
+        );
+        return;
+      }
+
+      // Poll the status route rather than the listing: only the status route
+      // reconciles, so a listing can report `pending` long after the consent
+      // completed. Without this, "did it work?" has no reliable answer.
+      const deadline = result.expiresAt
+        ? Date.parse(result.expiresAt)
+        : Date.now() + 5 * 60_000;
+      process.stdout.write("Waiting for authorization… (Ctrl-C to stop)\n");
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 2_000));
+        let status: string | undefined;
+        try {
+          status = (
+            await client.serviceConnectionStatus({
+              service,
+              label: result.label,
+            })
+          ).status;
+        } catch {
+          // A transient failure mid-consent should not end the wait; the
+          // deadline is what ends it.
+          continue;
+        }
+        if (status === "connected") {
+          process.stdout.write(`Connected ${service} as "${result.label}".\n`);
+          return;
+        }
+      }
+      process.stdout.write(
+        `Still not authorized. The link may have expired — run ` +
+          `\`opencomputer connection list\` to check, or add it again.\n`,
       );
       return;
     }
 
     if (action === "list" || action === "ls" || action === undefined) {
-      const connections = await client.serviceConnections();
+      const listed = await client.serviceConnections();
+      // The listing route does not re-check with the provider, so an account
+      // authorized minutes ago can still read `pending`. The status route does
+      // reconcile, so ask it about the pending ones — and only those, so a
+      // settled list costs nothing extra.
+      const connections = await Promise.all(
+        listed.map(async (connection) => {
+          if (connection.status === "connected") return connection;
+          try {
+            const live = await client.serviceConnectionStatus({
+              service: serviceOfConnection(connection),
+              label: connection.label,
+            });
+            return { ...connection, status: live.status };
+          } catch {
+            return connection;
+          }
+        }),
+      );
       if (globals.json) {
         printJSON(connections);
         return;

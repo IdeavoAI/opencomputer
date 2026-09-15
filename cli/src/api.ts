@@ -667,6 +667,29 @@ export class OpenComputerClient {
     });
   }
 
+  /**
+   * Live status for one connected account.
+   *
+   * Unlike the listing, this reconciles: it asks the provider whether the
+   * consent completed and records the answer. A connection that was left
+   * `pending` in the listing becomes `connected` here once someone has
+   * actually authorized it.
+   */
+  serviceConnectionStatus(input: { service: string; label: string }) {
+    const provider = input.service === "github" ? "github" : "google";
+    const query = new URLSearchParams({
+      service: input.service,
+      label: input.label,
+    });
+    return this.request<{
+      service: string;
+      label: string;
+      status: string;
+      connectionId?: string;
+      scopes?: string[];
+    }>(`/api/managed-agents/connections/${provider}/status?${query.toString()}`);
+  }
+
   disconnectServiceConnection(input: { service: string; connectionId: string }) {
     const provider = input.service === "github" ? "github" : "google";
     const query = new URLSearchParams({

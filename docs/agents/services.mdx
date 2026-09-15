@@ -41,8 +41,15 @@ curl -X POST "$OC_API_URL/api/managed-agents/connections/google/link" \
 
 Both return a link. Whoever opens it consents with their own account and it is
 connected under that label — they never sign in to OpenComputer, and no
-credential passes through your side. Send the link to the person whose account
-it is.
+credential passes through your side.
+
+The CLI then waits and prints `Connected` once the account is authorized, so
+you know it worked. It does not open a browser: the account often belongs to
+somebody else, and this runs on servers as readily as on a laptop. Send them
+the link and leave it waiting, or press Ctrl-C — the connection is unaffected.
+
+For minting several links at once, `--no-wait` prints the link and exits.
+`--json` does the same and is the one to script against.
 
 Omitting the label connects it as `default`, which is what the examples below
 assume. **`default` is a literal name, not a fallback**: if you connect an
@@ -247,6 +254,7 @@ collections rather than asking for them in one call.
 | `409 connection_alias_required` | Several accounts connected, no `label` given | Pass `label`; the message lists them |
 | `403` from the service | The consent is narrower than the call needs | Reconnect the account with wider access |
 | `listServices()` returns `[]` | The service is not declared | Add `useService("gmail")` |
+| A connection stays `pending` | Nobody has opened the link yet, or it expired | `opencomputer connection list` re-checks pending accounts with the provider, so its answer is current |
 | A header you set is ignored | It is not in the allowlist above | Nothing — it cannot be sent |
 | Throws *managed connections are unavailable* | No connection layer | You are running outside the platform |
 
