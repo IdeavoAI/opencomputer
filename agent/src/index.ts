@@ -1,10 +1,6 @@
 import { Cron } from "croner";
 
-import {
-  memoryId,
-  memoryProjection,
-  type MemoryProjection,
-} from "./memory.js";
+import { memoryId, memoryProjection, type MemoryProjection } from "./memory.js";
 
 export type DataValue =
   | null
@@ -38,8 +34,41 @@ export interface WebhookRequestContext {
   readonly receivedAt: string;
 }
 
+/**
+ * Who sent this message, in the provider's own terms.
+ *
+ * An agent serving one Slack workspace never needs this. An agent serving
+ * many — one deployment behind a distributed app — needs it for everything:
+ * which customer's records to read, which credential to use, whether this
+ * person may act at all. Without it the agent is blind to the tenant, and no
+ * amount of prompting recovers what was never sent.
+ *
+ * These are the provider's public identifiers, not ours. `workspaceId` is a
+ * Slack team id or a Twilio account SID; `userId` is a Slack member id or an
+ * E.164 number. They are stable, and they are what an agent can join against
+ * its own customer records.
+ *
+ * Session ownership is keyed separately, by a one-way hash that is deliberately
+ * not derivable from these (see the platform's channel principal). This bag
+ * exists to be used by the agent; that key exists to keep sessions apart.
+ */
+export interface ChannelMessageContext {
+  readonly provider: string;
+  /** The connection this arrived on. Distinct installations, distinct ids. */
+  readonly connectionId: string;
+  /** The provider's tenant: a Slack team, a Twilio account. */
+  readonly workspaceId?: string;
+  /** Where it was said, when the provider names conversations. */
+  readonly conversationId?: string;
+  /** The provider's id for the person who said it. */
+  readonly userId?: string;
+}
+
 /** The turn outcomes an event subscription delivers. */
-export type OutcomeEventType = "turn.completed" | "turn.failed" | "turn.cancelled";
+export type OutcomeEventType =
+  | "turn.completed"
+  | "turn.failed"
+  | "turn.cancelled";
 
 /**
  * A recorded turn outcome of another session in the project, delivered by
@@ -72,7 +101,14 @@ interface BasicAgentInput {
 
 export type AgentInput =
   | (BasicAgentInput & {
-      readonly source: Exclude<InputSource, "schedule" | "webhook" | "event">;
+      readonly source: Exclude<
+        InputSource,
+        "channel" | "schedule" | "webhook" | "event"
+      >;
+    })
+  | (BasicAgentInput & {
+      readonly source: "channel";
+      readonly channel: Readonly<ChannelMessageContext>;
     })
   | (BasicAgentInput & {
       readonly source: "schedule";
@@ -95,8 +131,27 @@ export interface ConnectionReference extends ResourceReference {
   readonly kind: "connection";
 }
 
+/**
+ * Which store a secret is read from.
+ *
+ * `project` is one value for the whole deployment. `tenant` is one value per
+ * channel installation: an agent answering many workspaces resolves the
+ * credential belonging to whichever installation the message arrived through,
+ * so one customer's agent cannot reach another customer's account. `user` is
+ * narrower still — the credential of the particular person being acted for,
+ * so the upstream applies its own permissions to them rather than to the
+ * installation as a whole.
+ *
+ * Nothing falls back. A `tenant` secret never reaches for the project's, and a
+ * `user` secret never reaches for the installation's, because a credential
+ * substituted when the right one is missing is exactly how one customer ends
+ * up acting with another's authority.
+ */
+export type SecretScope = "project" | "tenant" | "user";
+
 export interface SecretReference extends ResourceReference {
   readonly kind: "secret";
+  readonly scope: SecretScope;
 }
 
 export interface SecretHeaderReference {
@@ -118,6 +173,26 @@ export interface HttpConnectionDefinition extends ConnectionReference {
 export interface HttpConnectionRedirectOrigin {
   readonly origin: string;
   readonly pathPrefix?: string;
+}
+
+export type GitHubAppPermission = "read" | "write";
+
+export interface GitHubAppPermissions {
+  readonly contents?: GitHubAppPermission;
+  readonly pull_requests?: GitHubAppPermission;
+  readonly issues?: GitHubAppPermission;
+  readonly checks?: GitHubAppPermission;
+  readonly actions?: GitHubAppPermission;
+  readonly metadata?: "read";
+}
+
+export interface GitHubAppProvider {
+  readonly kind: "github-app";
+  readonly permissions: Readonly<GitHubAppPermissions>;
+}
+
+export interface GitHubConnectionDefinition extends ConnectionReference {
+  readonly provider: GitHubAppProvider;
 }
 
 export interface McpServerDefinition extends ResourceReference {
@@ -346,6 +421,181 @@ export interface ToolDefinition<
   run(context: ToolExecutionContext): Output | Promise<Output>;
 }
 
+/** One line on an approval card: what changes, from what, to what. */
+export interface ApprovalFact {
+  readonly label: string;
+  readonly value: string;
+}
+
+/**
+ * What a person is shown before they decide. Built by `preview`, stored
+ * verbatim, and kept after the decision as the record of what was agreed to.
+ */
+export interface ApprovalPreview {
+  readonly title: string;
+  readonly summary?: string;
+  readonly facts?: readonly ApprovalFact[];
+}
+
+export interface ApprovalDecision {
+  /**
+   * This approval, once. Stable, unique, and the same on every attempt to
+   * carry out this one decision.
+   *
+   * Pass it to whatever you call as an idempotency key. Then a write that
+   * cannot be confirmed — the runtime died mid-flight, the answer never came
+   * back — can simply be run again, because the second attempt returns the
+   * first one's result instead of charging anyone twice:
+   *
+   * ```ts
+   * async apply({ input, decision, signal }) {
+   *   return billing.fetch("/charges", {
+   *     method: "POST",
+   *     headers: { "Idempotency-Key": decision.id },
+   *     body: JSON.stringify({ customer: input.customerId }),
+   *     signal,
+   *   });
+   * }
+   * ```
+   *
+   * Without it an unconfirmed write is a dead end: nobody can retry it,
+   * because nobody can tell whether the first attempt landed.
+   */
+  readonly id: string;
+  readonly decidedAt: string;
+  /** Who clicked, in the provider's terms. Absent if the platform decided. */
+  readonly decidedBy?: string;
+}
+
+export interface GatedToolApplyContext extends ToolExecutionContext {
+  readonly decision: Readonly<ApprovalDecision>;
+}
+
+export interface ApprovalPublishResult {
+  readonly id: string;
+  readonly status: "pending" | "approved" | "denied" | "applied";
+  readonly duplicate: boolean;
+  /** What to tell the model. Supplied by the platform so every agent agrees. */
+  readonly message: string;
+}
+
+export interface GatedToolDefinition<
+  Output extends DataValue = DataValue,
+> extends ResourceReference {
+  readonly kind: "gated-tool";
+  readonly version: 1;
+  readonly name: string;
+  readonly description: string;
+  readonly input?: ToolInputSchema;
+  readonly output?: ToolInputSchema;
+  preview(context: ToolExecutionContext): ApprovalPreview | Promise<ApprovalPreview>;
+  apply(context: GatedToolApplyContext): Output | Promise<Output>;
+  /**
+   * What the model calls. It does not write: it builds the preview, records
+   * the proposal, and returns a sentence telling the model to stop. The write
+   * happens later, in `apply`, from the arguments stored here.
+   */
+  run(context: ToolExecutionContext): Promise<string>;
+}
+
+function approvalPreview(value: unknown, toolId: string): ApprovalPreview {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`Tool ${toolId} preview must return an object`);
+  }
+  const preview = value as ApprovalPreview;
+  if (typeof preview.title !== "string" || !preview.title.trim()) {
+    throw new Error(`Tool ${toolId} preview requires a non-empty title`);
+  }
+  if (preview.summary !== undefined && typeof preview.summary !== "string") {
+    throw new Error(`Tool ${toolId} preview summary must be a string`);
+  }
+  if (preview.facts !== undefined) {
+    if (!Array.isArray(preview.facts)) {
+      throw new Error(`Tool ${toolId} preview facts must be an array`);
+    }
+    if (preview.facts.length > 20) {
+      throw new Error(`Tool ${toolId} preview may carry at most 20 facts`);
+    }
+    for (const fact of preview.facts) {
+      if (
+        !fact ||
+        typeof fact.label !== "string" ||
+        typeof fact.value !== "string"
+      ) {
+        throw new Error(
+          `Tool ${toolId} preview facts must each have a label and a value`,
+        );
+      }
+    }
+  }
+  return preview;
+}
+
+/**
+ * Record a proposal for a human to decide on.
+ *
+ * Reaches the platform the way an outbox item does: over the session's own
+ * runtime token, which is the only credential the agent holds that the
+ * platform trusts.
+ */
+export async function publishApproval(
+  tool: string | ResourceReference,
+  input: {
+    readonly input: DataValue;
+    readonly preview: ApprovalPreview;
+    readonly idempotencyKey: string;
+  },
+): Promise<ApprovalPublishResult> {
+  const id = resourceIdentifier(
+    typeof tool === "string" ? tool : tool.id,
+    "publishApproval",
+  );
+  const idempotencyKey = input.idempotencyKey.trim();
+  if (!idempotencyKey || idempotencyKey.length > 256) {
+    throw new Error("Approval idempotency keys must contain 1 to 256 characters");
+  }
+  const runtime = globalThis as typeof globalThis & {
+    process?: { env?: Record<string, string | undefined> };
+  };
+  const base = runtime.process?.env?.OPENCOMPUTER_APPROVAL_URL;
+  const token = runtime.process?.env?.OPENCOMPUTER_APPROVAL_TOKEN;
+  if (!base || !token) {
+    throw new Error("OpenComputer approvals are unavailable");
+  }
+  const response = await fetch(`${base.replace(/\/$/, "")}`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      toolId: id,
+      input: input.input,
+      preview: input.preview,
+      idempotencyKey,
+    }),
+  });
+  if (!response.ok) {
+    // Whatever the model is told here, it repeats to a person — and a bare
+    // status code invites it to invent a reason. The platform writes these
+    // sentences so the explanation is true.
+    const detail = await response.text().catch(() => "");
+    let message = "";
+    try {
+      const problem = JSON.parse(detail) as { error?: { message?: unknown } };
+      if (typeof problem.error?.message === "string") {
+        message = problem.error.message;
+      }
+    } catch {
+      /* not a problem document; fall through to the status */
+    }
+    throw new Error(
+      message || `Recording the approval failed with status ${response.status}`,
+    );
+  }
+  return (await response.json()) as ApprovalPublishResult;
+}
+
 export type {
   DocumentMemoryInput,
   DocumentMemoryProvider,
@@ -373,6 +623,9 @@ export { defineMemory, documentMemory, httpMemory } from "./memory.js";
  * - `useInput()` reads `scope.input`.
  * - `useSessionData(key)` reads `scope.state[key]`.
  * - `useTool(id)` adds to `scope.tools`; returned as `enabledTools`.
+ * - `useConnection(id)` adds to `scope.connections`; returned as
+ *   `requiredConnections` so the host can make the declared connection
+ *   available to this render.
  * - `useMemory(id)` reads `scope.memory[id]`, the projection the host
  *   resolved for the session binding with that resource id (absent when the
  *   session has no binding for it), and adds the id to
@@ -384,6 +637,7 @@ interface AgentHooks {
   useInput(): Readonly<AgentInput>;
   useModel(model: ModelSelection): void;
   useTool(tool: string | ResourceReference): void;
+  useConnection(connection: string | ResourceReference): void;
   useSubagent(agent: string | ResourceReference): void;
   useSessionData<T extends DataValue>(key: string): T | undefined;
   useMcpServer(server: string | ResourceReference): void;
@@ -412,14 +666,21 @@ function identifier(value: string, kind: string): string {
 const OPENCOMPUTER_USER_AGENT =
   "OpenComputer-Agent/1 (+https://opencomputer.dev)";
 
-export function useSecret(name: string): SecretReference {
+export function useSecret(
+  name: string,
+  options: { scope?: SecretScope } = {},
+): SecretReference {
   const id = identifier(name, "useSecret");
   if (!/^[A-Z][A-Z0-9_]{0,127}$/.test(id)) {
     throw new Error(
       "Secret names must use uppercase letters, numbers, and underscores",
     );
   }
-  return Object.freeze({ kind: "secret", id });
+  const scope = options.scope ?? "project";
+  if (scope !== "project" && scope !== "tenant" && scope !== "user") {
+    throw new Error('A secret scope must be "project", "tenant" or "user"');
+  }
+  return Object.freeze({ kind: "secret", id, scope });
 }
 
 export function secretHeader(
@@ -431,6 +692,45 @@ export function secretHeader(
 
 export function bearer(secret: SecretReference): SecretHeaderReference {
   return secretHeader(secret, { prefix: "Bearer " });
+}
+
+const GITHUB_APP_PERMISSION_KEYS = [
+  "actions",
+  "checks",
+  "contents",
+  "issues",
+  "metadata",
+  "pull_requests",
+] as const;
+
+export function githubApp(options: {
+  permissions: GitHubAppPermissions;
+}): GitHubAppProvider {
+  const entries = Object.entries(options?.permissions ?? {});
+  if (entries.length === 0) {
+    throw new Error("githubApp() requires at least one permission");
+  }
+  const permissions: Record<string, GitHubAppPermission> = {};
+  for (const [name, level] of entries) {
+    if (!(GITHUB_APP_PERMISSION_KEYS as readonly string[]).includes(name)) {
+      throw new Error(
+        `githubApp() does not support the ${name} permission; supported permissions are ${GITHUB_APP_PERMISSION_KEYS.join(", ")}`,
+      );
+    }
+    if (level !== "read" && level !== "write") {
+      throw new Error(
+        `githubApp() permission ${name} must be "read" or "write"`,
+      );
+    }
+    if (name === "metadata" && level !== "read") {
+      throw new Error('githubApp() permission metadata must be "read"');
+    }
+    permissions[name] = level;
+  }
+  return Object.freeze({
+    kind: "github-app",
+    permissions: Object.freeze(permissions),
+  });
 }
 
 /**
@@ -533,7 +833,10 @@ export async function callService(request: ServiceRequest): Promise<Response> {
  */
 async function unwrapServiceResponse(response: Response): Promise<Response> {
   if (!response.ok) return response;
-  const envelope = (await response.clone().json().catch(() => null)) as {
+  const envelope = (await response
+    .clone()
+    .json()
+    .catch(() => null)) as {
     status?: unknown;
     headers?: unknown;
     body?: unknown;
@@ -586,13 +889,15 @@ export interface ConnectedService {
  * it is the platform's own API, not an upstream service whose status codes
  * the caller needs to see.
  */
-export async function listServices(options: {
-  /** Restrict to one grant, e.g. `google`. Omit for everything. */
-  provider?: string;
-  /** Omit unusable accounts. Defaults to true. */
-  connectedOnly?: boolean;
-  signal?: AbortSignal;
-} = {}): Promise<ConnectedService[]> {
+export async function listServices(
+  options: {
+    /** Restrict to one grant, e.g. `google`. Omit for everything. */
+    provider?: string;
+    /** Omit unusable accounts. Defaults to true. */
+    connectedOnly?: boolean;
+    signal?: AbortSignal;
+  } = {},
+): Promise<ConnectedService[]> {
   const runtime = globalThis as typeof globalThis & {
     process?: { env?: Record<string, string | undefined> };
   };
@@ -632,15 +937,36 @@ export async function listServices(options: {
   );
 }
 
-export function defineConnection(input: {
+interface HttpConnectionInput {
   id: string;
   origin: string;
   headers?: Readonly<Record<string, string | SecretHeaderReference>>;
   methods?: readonly string[];
   pathPrefix?: string;
   redirectOrigins?: readonly HttpConnectionRedirectOrigin[];
-}): HttpConnectionDefinition {
+}
+
+interface GitHubConnectionInput {
+  id: string;
+  provider: GitHubAppProvider;
+}
+
+export function defineConnection(
+  input: HttpConnectionInput,
+): HttpConnectionDefinition;
+export function defineConnection(
+  input: GitHubConnectionInput,
+): GitHubConnectionDefinition;
+export function defineConnection(
+  input: HttpConnectionInput | GitHubConnectionInput,
+): HttpConnectionDefinition | GitHubConnectionDefinition {
   const id = identifier(input.id, "defineConnection");
+  if ("provider" in input) {
+    if (input.provider?.kind !== "github-app") {
+      throw new Error("defineConnection() received an unsupported provider");
+    }
+    return Object.freeze({ kind: "connection", id, provider: input.provider });
+  }
   const origin = new URL(input.origin);
   if (origin.protocol !== "https:" || origin.pathname !== "/") {
     throw new Error("Connection origins must be HTTPS origins without a path");
@@ -952,8 +1278,10 @@ function replyDestinations(
   input: ChannelInputBase,
   provider: ChannelProvider,
 ): Record<string, Readonly<ChannelDestinationDefinition>> {
-  const destinations: Record<string, Readonly<ChannelDestinationDefinition>> =
-    {};
+  const destinations: Record<
+    string,
+    Readonly<ChannelDestinationDefinition>
+  > = {};
   for (const [name, destination] of Object.entries(input.destinations ?? {})) {
     const destinationId = resourceIdentifier(name, "Channel destination");
     if (destination.type !== "reply") {
@@ -970,7 +1298,9 @@ function replyDestinations(
 }
 
 export function defineChannel(input: SlackChannelInput): SlackChannelDefinition;
-export function defineChannel(input: TwilioChannelInput): TwilioChannelDefinition;
+export function defineChannel(
+  input: TwilioChannelInput,
+): TwilioChannelDefinition;
 export function defineChannel(input: EmailChannelInput): EmailChannelDefinition;
 export function defineChannel(input: ChannelInput): ChannelDefinition {
   const common = channelCommon(input);
@@ -1117,13 +1447,50 @@ export function registerOutbox(
   });
 }
 
-export function defineTool<Output extends DataValue = DataValue>(input: {
+export interface ToolInput<Output extends DataValue = DataValue> {
   name: string;
   description: string;
   input?: ToolInputSchema;
   output?: ToolInputSchema;
   run(context: ToolExecutionContext): Output | Promise<Output>;
-}): ToolDefinition<Output> {
+}
+
+export interface GatedToolInput<Output extends DataValue = DataValue> {
+  name: string;
+  description: string;
+  input?: ToolInputSchema;
+  output?: ToolInputSchema;
+  /**
+   * Runs when the model calls the tool. Reads; never writes. What this returns
+   * is what a person sees and agrees to.
+   */
+  preview(context: ToolExecutionContext): ApprovalPreview | Promise<ApprovalPreview>;
+  /** Runs only after somebody approves, from the arguments previewed above. */
+  apply(context: GatedToolApplyContext): Output | Promise<Output>;
+}
+
+/**
+ * Define a tool.
+ *
+ * A tool that writes can wait for a person: supply `preview` and `apply`
+ * instead of `run`, and the model's call becomes a proposal rather than the
+ * write. `run` is then written for you — it builds the preview, records the
+ * proposal under the calling message's id so a retry is one approval rather
+ * than two, and returns a sentence telling the model to stop.
+ *
+ * Waiting for approval is a property of a tool, not a different kind of thing:
+ * the model sees it, and `useTool` selects it, exactly as for any other. What
+ * changes is only whether the tool's body runs now or after a decision.
+ */
+export function defineTool<Output extends DataValue = DataValue>(
+  input: ToolInput<Output>,
+): ToolDefinition<Output>;
+export function defineTool<Output extends DataValue = DataValue>(
+  input: GatedToolInput<Output>,
+): GatedToolDefinition<Output>;
+export function defineTool<Output extends DataValue = DataValue>(
+  input: ToolInput<Output> | GatedToolInput<Output>,
+): ToolDefinition<Output> | GatedToolDefinition<Output> {
   const id = identifier(input.name, "defineTool");
   if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
     throw new Error(
@@ -1139,12 +1506,61 @@ export function defineTool<Output extends DataValue = DataValue>(input: {
   if (input.output && typeof input.output !== "object") {
     throw new Error("defineTool output must be a JSON Schema object");
   }
+
+  const candidate = input as Partial<ToolInput<Output>> &
+    Partial<GatedToolInput<Output>>;
+  const gated =
+    typeof candidate.preview === "function" ||
+    typeof candidate.apply === "function";
+
+  if (!gated) {
+    if (typeof candidate.run !== "function") {
+      throw new Error(
+        "defineTool requires run(), or preview() and apply() for a tool that waits for approval",
+      );
+    }
+    return Object.freeze({
+      kind: "tool" as const,
+      version: 1 as const,
+      ...(input as ToolInput<Output>),
+      id,
+      name: id,
+    });
+  }
+
+  // Half a gate is the dangerous shape: a preview with no apply asks for a
+  // decision nothing acts on, and an apply with no preview asks a person to
+  // approve something they were never shown.
+  if (typeof candidate.preview !== "function") {
+    throw new Error("A tool with apply() also requires preview()");
+  }
+  if (typeof candidate.apply !== "function") {
+    throw new Error("A tool with preview() also requires apply()");
+  }
+  if (typeof candidate.run === "function") {
+    throw new Error(
+      "A tool has either run(), or preview() and apply() — not both; run() is written for you when the tool waits for approval",
+    );
+  }
+
+  const definition = input as GatedToolInput<Output>;
   return Object.freeze({
-    kind: "tool" as const,
+    kind: "gated-tool" as const,
     version: 1 as const,
-    ...input,
+    ...definition,
     id,
     name: id,
+    async run(context: ToolExecutionContext): Promise<string> {
+      const preview = approvalPreview(await definition.preview(context), id);
+      // The tool call is the proposal's identity, so the same call recorded
+      // twice — a retry, a resumed turn — is one approval, not two.
+      const result = await publishApproval(id, {
+        input: context.input as DataValue,
+        preview,
+        idempotencyKey: context.messageId,
+      });
+      return result.message;
+    },
   });
 }
 
@@ -1154,7 +1570,9 @@ export function defineTool<Output extends DataValue = DataValue>(input: {
  * before inference. Calling it also selects the binding's permitted tools for
  * this model request; omitting it exposes none of them.
  */
-export function useMemory(memory: string | ResourceReference): MemoryProjection {
+export function useMemory(
+  memory: string | ResourceReference,
+): MemoryProjection {
   const id = memoryId(
     typeof memory === "string" ? memory : memory.id,
     "useMemory",
@@ -1168,6 +1586,8 @@ export const useModel = (model: ModelSelection): void =>
   hooks().useModel(model);
 export const useTool = (tool: string | ResourceReference): void =>
   hooks().useTool(tool);
+export const useConnection = (connection: string | ResourceReference): void =>
+  hooks().useConnection(connection);
 /**
  * Declare that this agent reaches a managed service.
  *
@@ -1182,7 +1602,6 @@ export const useTool = (tool: string | ResourceReference): void =>
  */
 export const useService = (service: string): void =>
   hooks().useService?.(service);
-
 export const useSubagent = (agent: string | ResourceReference): void =>
   hooks().useSubagent(agent);
 export const useMcpServer = (server: string | ResourceReference): void =>

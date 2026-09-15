@@ -159,6 +159,7 @@ export default registerOutbox(reviewRequests);
     assert.match(built.digest, /^[a-f0-9]{64}$/);
     assert.deepEqual(built.manifest, {
       version: 1,
+      gatedTools: [],
       channels: [
         {
           id: "team-slack",
@@ -342,6 +343,7 @@ export default function Agent() {
       subagents: string[];
       connections: string[];
       httpConnections: unknown[];
+      githubConnections: unknown[];
       mcpServers: string[];
       mcpServerDefinitions: Array<{
         id: string;
@@ -355,10 +357,12 @@ export default function Agent() {
       version: 2,
       entry: "../agent.js",
       tools: ["search-docs"],
+      gatedTools: [],
       toolModules: [],
       subagents: ["researcher"],
       connections: [],
       httpConnections: [],
+      githubConnections: [],
       mcpServers: ["docs"],
       mcpServerDefinitions: [
         { id: "docs", url: "https://mcp.example.com/" },
@@ -626,6 +630,108 @@ export default function Agent() {
   }
 });
 
+test("a tool is gated by having preview and apply, not by the words appearing in it", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-gated-shape-"));
+  try {
+    const initialized = await initializeAgentProject(resolve(parent, "app"));
+    await mkdir(resolve(initialized.agentRoot, "tools"), { recursive: true });
+    // An ordinary tool whose SCHEMA happens to describe fields called preview
+    // and apply. Gating used to be visible in the function's name; now it is
+    // the shape of the object, and a textual match would read this as gated
+    // and make the runtime refuse to render it.
+    await writeFile(
+      resolve(initialized.agentRoot, "tools", "drafts.ts"),
+      `import { defineTool } from "@opencomputer/agent";
+
+export const draft = defineTool({
+  name: "draft",
+  description: "Render a draft",
+  input: {
+    type: "object",
+    properties: {
+      preview: { type: "boolean", description: "Return a preview only" },
+      apply: { type: "boolean", description: "Apply the template" },
+    },
+  },
+  run({ input }) {
+    return { preview: Boolean(input.preview) };
+  },
+});
+`,
+    );
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { useTool } from "@opencomputer/agent";
+import { draft } from "./tools/drafts.js";
+
+export default function Agent() {
+  useTool(draft);
+  return "Draft when asked.";
+}
+`,
+    );
+
+    const runtime = await prepareAgent(initialized.agentRoot);
+    const manifest = JSON.parse(
+      await readFile(resolve(runtime, ".opencomputer", "reactive.json"), "utf8"),
+    ) as { tools: string[]; gatedTools: string[] };
+    assert.deepEqual(manifest.tools, ["draft"]);
+    assert.deepEqual(manifest.gatedTools, []);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("a tool cannot be half gated", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-half-gate-"));
+  try {
+    const initialized = await initializeAgentProject(resolve(parent, "app"));
+    await mkdir(resolve(initialized.agentRoot, "tools"), { recursive: true });
+    await writeFile(
+      resolve(initialized.agentRoot, "tools", "billing.ts"),
+      `import { defineTool } from "@opencomputer/agent";
+
+// apply() with no preview(): a person would be asked to approve something
+// they were never shown.
+export const cancel = defineTool({
+  name: "cancel",
+  description: "Cancel a subscription",
+  async apply() {
+    return { cancelled: true };
+  },
+});
+`,
+    );
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { useTool } from "@opencomputer/agent";
+import { cancel } from "./tools/billing.js";
+
+export default function Agent() {
+  useTool(cancel);
+  return "Cancel when asked.";
+}
+`,
+    );
+
+    // The compiler still records it as gated — either half means it intends to
+    // wait — so the module load is where the incomplete pair is caught.
+    const runtime = await prepareAgent(initialized.agentRoot);
+    const manifest = JSON.parse(
+      await readFile(resolve(runtime, ".opencomputer", "reactive.json"), "utf8"),
+    ) as { gatedTools: string[] };
+    assert.deepEqual(manifest.gatedTools, ["cancel"]);
+    await assert.rejects(
+      import(
+        `${pathToFileURL(resolve(runtime, "tools", "billing.js")).href}?test=${crypto.randomUUID()}`
+      ),
+      /A tool with apply\(\) also requires preview\(\)/,
+    );
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
 test("the compiler records secret-backed HTTP connections without secret values", async () => {
   const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-egress-"));
   const root = resolve(parent, "app");
@@ -662,10 +768,11 @@ export const repository = defineTool({
     );
     await writeFile(
       resolve(initialized.agentRoot, "agent.ts"),
-      `import { useTool } from "@opencomputer/agent";
+      `import { useConnection, useTool } from "@opencomputer/agent";
 import { repository } from "./tools/github.js";
 
 export default function Agent() {
+  useConnection({ id: "github-api" });
   useTool(repository);
   return "Use GitHub when needed.";
 }
@@ -701,6 +808,122 @@ export default function Agent() {
     ]);
     assert.ok(built.connections.includes("github-api"));
     assert.doesNotMatch(built.body.toString("utf8"), /actual-secret-value/);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("the compiler records managed GitHub permissions as a provider connection", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-github-app-"));
+  const root = resolve(parent, "app");
+  try {
+    const initialized = await initializeAgentProject(root);
+    await mkdir(resolve(initialized.agentRoot, "connections"), {
+      recursive: true,
+    });
+    await writeFile(
+      resolve(initialized.agentRoot, "connections", "github.ts"),
+      `import { defineConnection, githubApp } from "@opencomputer/agent";
+
+export const github = defineConnection({
+  id: "github",
+  provider: githubApp({
+    permissions: {
+      pull_requests: "write",
+      contents: "write",
+      metadata: "read",
+    },
+  }),
+});
+`,
+    );
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { useConnection } from "@opencomputer/agent";
+import { github } from "./connections/github.js";
+
+export default function Agent() {
+  useConnection(github);
+  return "Work with GitHub directly.";
+}
+`,
+    );
+
+    const built = await buildAgentArtifact(initialized.agentRoot);
+    assert.deepEqual(built.connections, ["github"]);
+    assert.deepEqual(built.httpConnections, []);
+    assert.deepEqual(built.githubConnections, [
+      {
+        id: "github",
+        provider: {
+          kind: "github-app",
+          permissions: {
+            contents: "write",
+            metadata: "read",
+            pull_requests: "write",
+          },
+        },
+      },
+    ]);
+    const manifest = JSON.parse(
+      await readFile(
+        resolve(initialized.agentRoot, ".opencomputer", "runtime", ".opencomputer", "reactive.json"),
+        "utf8",
+      ),
+    ) as { githubConnections: unknown[] };
+    assert.deepEqual(manifest.githubConnections, built.githubConnections);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("the compiler rejects dynamic or unsupported GitHub permissions", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-github-invalid-"));
+  const root = resolve(parent, "app");
+  try {
+    const initialized = await initializeAgentProject(root);
+    await mkdir(resolve(initialized.agentRoot, "connections"), {
+      recursive: true,
+    });
+    const connection = resolve(
+      initialized.agentRoot,
+      "connections",
+      "github.ts",
+    );
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import "./connections/github.js";
+export default function Agent() { return "Use GitHub."; }
+`,
+    );
+    await writeFile(
+      connection,
+      `import { defineConnection, githubApp } from "@opencomputer/agent";
+const permissions = { contents: "write" } as const;
+export default defineConnection({
+  id: "github",
+  provider: githubApp({ permissions }),
+});
+`,
+    );
+    await assert.rejects(
+      buildAgentArtifact(initialized.agentRoot),
+      /githubApp\(\) options must be static/,
+    );
+
+    await writeFile(
+      connection,
+      `import { defineConnection, githubApp } from "@opencomputer/agent";
+export default defineConnection({
+  id: "github",
+  provider: githubApp({ permissions: { administration: "write" } }),
+});
+`,
+    );
+    await assert.rejects(
+      buildAgentArtifact(initialized.agentRoot),
+      /does not support the administration permission/,
+    );
   } finally {
     await rm(parent, { recursive: true, force: true });
   }
@@ -894,6 +1117,129 @@ export default function Agent() {
       `${pathToFileURL(resolve(runtime, "tools", "hacker-news.js")).href}?test=${crypto.randomUUID()}`
     ) as { hackerNews: { id: string } };
     assert.equal(tools.hackerNews.id, "hacker_news");
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("a gated tool proposes instead of writing, and carries its apply", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-gated-tools-"));
+  const root = resolve(parent, "app");
+  try {
+    const initialized = await initializeAgentProject(root);
+    await mkdir(resolve(initialized.agentRoot, "tools"), { recursive: true });
+    await writeFile(
+      resolve(initialized.agentRoot, "tools", "billing.ts"),
+      `import { defineTool } from "@opencomputer/agent";
+
+export const attach = defineTool({
+  name: "attach",
+  description: "Move a customer onto a plan",
+  input: { type: "object", properties: { plan: { type: "string" } } },
+  preview({ input }) {
+    return { title: \`Move to \${String(input.plan)}\`, facts: [{ label: "Plan", value: String(input.plan) }] };
+  },
+  async apply({ input }) {
+    return { applied: String(input.plan) };
+  },
+});
+`,
+    );
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { useTool } from "@opencomputer/agent";
+import { attach } from "./tools/billing.js";
+
+export default function Agent() {
+  useTool(attach);
+  return "Change the plan when asked.";
+}
+`,
+    );
+
+    const runtime = await prepareAgent(initialized.agentRoot);
+    const manifest = JSON.parse(
+      await readFile(
+        resolve(runtime, ".opencomputer", "reactive.json"),
+        "utf8",
+      ),
+    ) as { tools: string[]; gatedTools: string[]; toolModules: string[] };
+    // The model sees it as an ordinary tool; the platform is told it is gated.
+    assert.ok(manifest.tools.includes("attach"));
+    assert.deepEqual(manifest.gatedTools, ["attach"]);
+    assert.ok(manifest.toolModules.includes("../tools/billing.js"));
+
+    const built = (await import(
+      `${pathToFileURL(resolve(runtime, "tools", "billing.js")).href}?test=${crypto.randomUUID()}`
+    )) as {
+      attach: {
+        kind: string;
+        run(context: Record<string, unknown>): Promise<string>;
+        apply(context: Record<string, unknown>): Promise<unknown>;
+      };
+    };
+    assert.equal(built.attach.kind, "gated-tool");
+
+    const posted: Array<{ url: string; body: Record<string, unknown> }> = [];
+    const realFetch = globalThis.fetch;
+    process.env.OPENCOMPUTER_APPROVAL_URL = "https://edge.test/v1/sessions/s1/approvals";
+    process.env.OPENCOMPUTER_APPROVAL_TOKEN = "runtime-token";
+    globalThis.fetch = (async (url: string, init: { body: string }) => {
+      posted.push({ url: String(url), body: JSON.parse(init.body) as Record<string, unknown> });
+      return new Response(
+        JSON.stringify({ id: "apr_1", status: "pending", duplicate: false, message: "Recorded for approval." }),
+        { headers: { "content-type": "application/json" } },
+      );
+    }) as unknown as typeof globalThis.fetch;
+    try {
+      // Calling it records a proposal and tells the model to stop. No write.
+      const answer = await built.attach.run({
+        input: { plan: "pro" },
+        messageId: "msg-1",
+        sessionId: "s1",
+        agentId: "a1",
+      });
+      assert.equal(answer, "Recorded for approval.");
+      assert.equal(posted.length, 1);
+      assert.deepEqual(posted[0]!.body.input, { plan: "pro" });
+      assert.deepEqual(posted[0]!.body.preview, {
+        title: "Move to pro",
+        facts: [{ label: "Plan", value: "pro" }],
+      });
+      // The tool call is the proposal's identity, so a retry is one approval.
+      assert.equal(posted[0]!.body.idempotencyKey, "msg-1");
+
+      // A refusal reaches the model, which repeats it to a person. The
+      // platform writes the sentence; a bare status code invites invention.
+      globalThis.fetch = (async () =>
+        new Response(
+          JSON.stringify({
+            error: {
+              code: "approval_needs_a_conversation",
+              message: "This tool can only be used in a conversation where somebody can approve it.",
+            },
+          }),
+          { status: 409, headers: { "content-type": "application/json" } },
+        )) as unknown as typeof globalThis.fetch;
+      await assert.rejects(
+        built.attach.run({
+          input: { plan: "pro" },
+          messageId: "msg-2",
+          sessionId: "s1",
+          agentId: "a1",
+        }),
+        /somebody can approve it/,
+      );
+
+      // The write itself lives in apply, and never ran.
+      assert.deepEqual(await built.attach.apply({ input: { plan: "pro" } }), {
+        applied: "pro",
+      });
+    } finally {
+      globalThis.fetch = realFetch;
+      delete process.env.OPENCOMPUTER_APPROVAL_URL;
+      delete process.env.OPENCOMPUTER_APPROVAL_TOKEN;
+    }
   } finally {
     await rm(parent, { recursive: true, force: true });
   }

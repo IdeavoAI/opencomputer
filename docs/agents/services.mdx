@@ -78,6 +78,14 @@ without it, `listServices()` returns nothing.
 The four Google services are one consent; GitHub is its own. A name outside
 that list fails the build rather than the request.
 
+<Note>
+There are two ways to reach GitHub, and they are for different jobs. Use
+`callService({ service: "github" })` to call the REST API on an account someone
+connected. Use a [GitHub App connection](/agents/github) when the agent needs
+to run `git` and `gh` itself — that one injects a token into the sandbox rather
+than proxying requests.
+</Note>
+
 ## 3. Call it from a tool
 
 `useService` goes in the agent; `callService` goes in a tool. An agent renders

@@ -63,6 +63,24 @@ export interface ManagedSecretMetadata {
   updatedAt: string;
 }
 
+export interface ManagedGitHubStatus {
+  environments: Array<{
+    environment: "development" | "production";
+    state: "not_connected" | "active" | "suspended" | "deleted";
+    installation?: {
+      id: string;
+      githubInstallationId: number;
+      accountLogin: string;
+      accountType: string;
+      repositorySelection: "all" | "selected";
+      state: "active" | "suspended" | "deleted";
+      createdAt: string;
+      updatedAt: string;
+    };
+  }>;
+  app: { slug: string } | null;
+}
+
 // Model access (work 011). The provider token is write-only; these shapes
 // carry only normalized metadata.
 /** An account the platform holds an OAuth credential for. */
@@ -481,6 +499,37 @@ export class OpenComputerClient {
   projectSourceArchive(projectId: string): Promise<Response> {
     return this.response(
       `/api/managed-agents/projects/${encodeURIComponent(projectId)}/source-archive`,
+    );
+  }
+
+  githubStatus(projectId: string) {
+    return this.request<ManagedGitHubStatus>(
+      `/api/managed-agents/projects/${encodeURIComponent(projectId)}/github`,
+    );
+  }
+
+  connectGitHub(input: {
+    projectId: string;
+    environments?: Array<"development" | "production">;
+  }) {
+    return this.request<{ installUrl: string; authorizeUrl: string }>(
+      `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/github/connect`,
+      {
+        method: "POST",
+        body: JSON.stringify(
+          input.environments ? { environments: input.environments } : {},
+        ),
+      },
+    );
+  }
+
+  disconnectGitHub(input: {
+    projectId: string;
+    environment: "development" | "production";
+  }) {
+    return this.request<void>(
+      `/api/managed-agents/projects/${encodeURIComponent(input.projectId)}/github?environment=${input.environment}`,
+      { method: "DELETE" },
     );
   }
 
@@ -1024,6 +1073,13 @@ export class OpenComputerClient {
       methods?: string[];
       pathPrefix?: string;
       redirectOrigins?: Array<{ origin: string; pathPrefix?: string }>;
+    }>;
+    githubConnections: Array<{
+      id: string;
+      provider: {
+        kind: "github-app";
+        permissions: Record<string, "read" | "write">;
+      };
     }>;
     memory: MemoryDeclaration[];
     models: Array<{ provider: string; model: string }>;

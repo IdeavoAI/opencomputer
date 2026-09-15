@@ -51,6 +51,7 @@
               "agents/outboxes",
               "agents/secrets",
               "agents/services",
+              "agents/github",
               "agents/byok",
               "agents/deployments"
             ]

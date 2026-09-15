@@ -248,6 +248,39 @@ const runtimeVariablesResponseSchema = z.object({
   variables: z.array(runtimeVariableSchema),
 })
 
+const githubInstallationSchema = z.object({
+  id: z.string(),
+  githubInstallationId: z.number(),
+  accountLogin: z.string(),
+  accountType: z.string(),
+  repositorySelection: z.enum(['all', 'selected']),
+  state: z.enum(['active', 'suspended', 'deleted']),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+})
+
+const githubStatusSchema = z.object({
+  environments: z.array(
+    z.object({
+      environment: z.enum(['development', 'production']),
+      state: z.enum(['not_connected', 'active', 'suspended', 'deleted']),
+      installation: githubInstallationSchema.optional(),
+    }),
+  ),
+  connections: z.array(githubInstallationSchema),
+  app: z.object({ slug: z.string() }).nullable(),
+})
+
+const githubConnectionsSchema = z.object({
+  connections: z.array(githubInstallationSchema),
+  app: z.object({ slug: z.string() }).nullable(),
+})
+
+const githubConnectSchema = z.object({
+  installUrl: z.string().url(),
+  authorizeUrl: z.string().url(),
+})
+
 const connectionSchema = z.object({
   id: z.string(),
   kind: z.enum(['tool', 'channel']),
@@ -731,6 +764,69 @@ export async function getManagedProject(projectId: string) {
     `/managed-agents/projects/${encodeURIComponent(projectId)}`,
     undefined,
     projectOverviewSchema,
+  )
+}
+
+export async function getManagedGitHubStatus(projectId: string) {
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(projectId)}/github`,
+    undefined,
+    githubStatusSchema,
+  )
+}
+
+export async function connectManagedGitHub(input: {
+  projectId: string
+  environments: Array<'development' | 'production'>
+}) {
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(input.projectId)}/github/connect`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ environments: input.environments }),
+    },
+    githubConnectSchema,
+  )
+}
+
+export async function getManagedGitHubConnections() {
+  return apiFetch('/managed-agents/github', undefined, githubConnectionsSchema)
+}
+
+export async function addManagedGitHubConnection(mode: 'install' | 'existing') {
+  const result = await apiFetch(
+    '/managed-agents/github/connect',
+    { method: 'POST', body: '{}' },
+    githubConnectSchema,
+  )
+  return mode === 'existing' ? result.authorizeUrl : result.installUrl
+}
+
+export async function attachManagedGitHub(input: {
+  projectId: string
+  environment: 'development' | 'production'
+  connectionId: string
+}) {
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(input.projectId)}/github/attach`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        environment: input.environment,
+        connectionId: input.connectionId,
+      }),
+    },
+    z.object({ attached: z.boolean() }),
+  )
+}
+
+export async function disconnectManagedGitHub(input: {
+  projectId: string
+  environment: 'development' | 'production'
+}) {
+  return apiFetch<void>(
+    `/managed-agents/projects/${encodeURIComponent(input.projectId)}/github?environment=${input.environment}`,
+    { method: 'DELETE' },
   )
 }
 
