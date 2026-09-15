@@ -18,7 +18,7 @@
     "node": ">=22.0.0"
   },
   "dependencies": {
-    "@opencomputer/cli": "0.7.3"
+    "@opencomputer/cli": "0.7.4"
   },
   "publishConfig": {
     "access": "public"
