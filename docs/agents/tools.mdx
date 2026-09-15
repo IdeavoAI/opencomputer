@@ -59,7 +59,11 @@ the result to the model.
 | `description` | yes | Explains what the tool does and when to use it |
 | `input` | no | JSON Schema for tool arguments |
 | `output` | no | JSON Schema describing the result |
-| `run` | yes | Synchronous or asynchronous implementation |
+| `run` | yes* | Synchronous or asynchronous implementation |
+| `preview` / `apply` | no | Supply these *instead of* `run` to [wait for a person](#wait-for-a-person-before-writing) |
+
+\* A tool has either `run`, or `preview` and `apply` — never both, and never
+just one of the pair.
 
 Descriptions are the model's documentation. Include the action, when it is
 appropriate, and any important precondition.
@@ -127,15 +131,21 @@ call the connection's `fetch()` method. See
 
 ## Wait for a person before writing
 
-Some writes should not happen because a model decided they should. A gated tool
+Some writes should not happen because a model decided they should. Such a tool
 proposes instead: the model calls it, nothing is written, and the person the
 agent is talking to sees a card with the exact change and decides.
 
+There is no separate primitive for this. Give `defineTool` a `preview` and an
+`apply` instead of a `run`, and the model's call becomes a proposal. `run` is
+written for you. `useTool` selects the tool exactly as it selects any other,
+and the model cannot tell the difference — waiting for approval is a property
+of a tool, not a different kind of thing.
+
 ```tsx
-import { defineGatedTool } from "@opencomputer/agent";
+import { defineTool } from "@opencomputer/agent";
 import { billing } from "./connections/billing";
 
-export const attach = defineGatedTool({
+export const attach = defineTool({
   name: "attach",
   description: "Move a customer onto a plan",
   input: {
@@ -195,18 +205,18 @@ is what makes it safe.
 
 ### What this does and does not guarantee
 
-A gated tool is a convention your code cooperates with. Nothing stops a tool
-from writing inside `preview`. What the platform guarantees is narrower and
+Approval is a convention your code cooperates with. Nothing stops a tool from
+writing inside `preview`. What the platform guarantees is narrower and
 still worth having: an approved write runs **once**, from the arguments the
 person agreed to, whether or not the session that proposed it still exists.
 
-Gated tools need a conversation to ask in. Called from the playground, a
-schedule or a webhook, there is nobody to ask, and the call fails saying so.
+A tool that waits needs a conversation to ask in. Called from the playground,
+a schedule or a webhook, there is nobody to ask, and the call fails saying so.
 
 ## Tools versus skills and MCP
 
 - A tool executes TypeScript you own.
-- A [gated tool](#wait-for-a-person-before-writing) does the same, once a
-  person approves it.
+- The same tool with `preview` and `apply` instead of `run`
+  [waits for a person](#wait-for-a-person-before-writing) before it does it.
 - A [skill](/agents/skills) teaches the agent a reusable procedure.
 - An [MCP server](/agents/mcp) supplies a remote collection of tools.
