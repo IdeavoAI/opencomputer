@@ -2322,6 +2322,59 @@ function definedToolIds(source: string): string[] {
     .sort();
 }
 
+interface ResultToolManifest {
+  id: string;
+  /** The output schema as written, pinned in the deployment for the host to validate against. */
+  output: Record<string, unknown>;
+}
+
+/**
+ * The result tools declared in one tool module: every `defineTool()` whose
+ * argument carries the literal `result: true`. The `output` schema is read
+ * as static JSON rather than evaluated, so the deployment records exactly
+ * the schema the source declares. The one-per-agent rule is applied by the
+ * caller across all tool modules.
+ */
+function definedResultTools(
+  source: string,
+  path: string,
+): ResultToolManifest[] {
+  const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
+  const declared: ResultToolManifest[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "defineTool"
+    ) {
+      const argument = node.arguments[0];
+      if (argument && ts.isObjectLiteralExpression(argument)) {
+        const name = objectProperty(argument, "name");
+        const label = `${path} defineTool(${name && ts.isStringLiteralLike(name) ? JSON.stringify(name.text) : ""})`;
+        const result = objectProperty(argument, "result");
+        if (result && result.kind !== ts.SyntaxKind.TrueKeyword && result.kind !== ts.SyntaxKind.FalseKeyword) {
+          throw new Error(`${label} result must be the literal true or false`);
+        }
+        if (result?.kind === ts.SyntaxKind.TrueKeyword) {
+          const output = objectProperty(argument, "output");
+          if (!output || !ts.isObjectLiteralExpression(output)) {
+            throw new Error(
+              `${label} is the result tool and must declare output as an inline JSON Schema object literal`,
+            );
+          }
+          declared.push({
+            id: literalStringValue(name, `${label} name`),
+            output: staticJsonValue(output, `${label} output`) as Record<string, unknown>,
+          });
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return declared;
+}
+
 function staticModelSelections(
   source: string,
 ): Array<{ provider: string; model: string }> {
@@ -2543,7 +2596,10 @@ export const defineTool = (input) => {
   if (!String(input.description).trim()) throw new Error("defineTool requires a non-empty description");
   if (input.input && typeof input.input !== "object") throw new Error("defineTool input must be a JSON Schema object");
   if (input.output && typeof input.output !== "object") throw new Error("defineTool output must be a JSON Schema object");
-  return Object.freeze({ kind: "tool", version: 1, ...input, id: toolId, name: toolId });
+  if (input.result !== undefined && typeof input.result !== "boolean") throw new Error("defineTool result must be true or false");
+  if (input.result === true && !input.output) throw new Error("defineTool result tools require an output schema; the host validates every result against it before committing");
+  const { result, ...definition } = input;
+  return Object.freeze({ kind: "tool", version: 1, ...definition, ...(result === true ? { result: true } : {}), id: toolId, name: toolId });
 };
 export const publishOutbox = async (outbox, input) => {
   const outboxId = id(typeof outbox === "string" ? outbox : outbox.id, "publishOutbox");
@@ -2782,6 +2838,7 @@ the product or support surface presented to users.
   );
   const reactiveTools: string[] = [];
   const toolModules: string[] = [];
+  const resultTools: Array<ResultToolManifest & { path: string }> = [];
   for (const candidate of toolSources) {
     const ids = definedToolIds(candidate.source);
     const calls = [
@@ -2795,6 +2852,11 @@ the product or support surface presented to users.
     if (ids.length > 0) {
       reactiveTools.push(...ids);
       toolModules.push(`../${compiledModulePath(candidate.path)}`);
+      resultTools.push(
+        ...definedResultTools(candidate.source, candidate.path).map(
+          (tool) => ({ ...tool, path: candidate.path }),
+        ),
+      );
     }
   }
   const duplicateTool = reactiveTools.find(
@@ -2805,6 +2867,19 @@ the product or support surface presented to users.
       `Tool id ${JSON.stringify(duplicateTool)} is defined more than once`,
     );
   }
+  // One result per session, so one result tool per agent: a second one
+  // would leave the host with two schemas and no rule for which output
+  // becomes the session's result.
+  if (resultTools.length > 1) {
+    throw new Error(
+      `An agent may declare one result tool; found ${resultTools
+        .map((tool) => `${JSON.stringify(tool.id)} in ${tool.path}`)
+        .join(" and ")}`,
+    );
+  }
+  const resultTool: ResultToolManifest | undefined = resultTools[0]
+    ? { id: resultTools[0].id, output: resultTools[0].output }
+    : undefined;
   const httpConnections = sourceModules.flatMap((module) =>
     definedHttpConnections(module.source, module.path),
   );
@@ -2885,6 +2960,9 @@ the product or support surface presented to users.
         entry: "../agent.js",
         tools,
         toolModules: toolModules.sort(),
+        // The result tool and the schema the host validates its output
+        // against before committing it as the session's result.
+        ...(resultTool ? { resultTool } : {}),
         subagents: literalHookIds(agentSource, "useSubagent"),
         // Declared HTTP connections AND managed-service grants: the platform
         // reads one list, and a google grant absent from it makes every

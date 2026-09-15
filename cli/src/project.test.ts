@@ -899,6 +899,155 @@ export default function Agent() {
   }
 });
 
+test("the compiler records the result tool and its pinned output schema", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-result-tool-"));
+  const root = resolve(parent, "app");
+  try {
+    const initialized = await initializeAgentProject(root);
+    await mkdir(resolve(initialized.agentRoot, "tools"), { recursive: true });
+    await writeFile(
+      resolve(initialized.agentRoot, "tools", "report.ts"),
+      `import { defineTool } from "@opencomputer/agent";
+
+export const report = defineTool({
+  name: "report",
+  description: "Report the branch and pull request",
+  input: {
+    type: "object",
+    properties: { branch: { type: "string" } },
+    additionalProperties: false,
+  },
+  output: {
+    type: "object",
+    properties: {
+      branch: { type: "string" },
+      pr: { type: "object", properties: { number: { type: "integer" } }, required: ["number"] },
+    },
+    required: ["branch"],
+    additionalProperties: false,
+  },
+  result: true,
+  async run({ input }) {
+    return { branch: String(input.branch) };
+  },
+});
+
+export const lookup = defineTool({
+  name: "lookup",
+  description: "Look something up",
+  result: false,
+  async run() {
+    return { found: true };
+  },
+});
+`,
+    );
+    await writeFile(
+      resolve(initialized.agentRoot, "agent.ts"),
+      `import { useTool } from "@opencomputer/agent";
+import { report } from "./tools/report.js";
+
+export default function Agent() {
+  useTool(report);
+  return "Report when the branch is known.";
+}
+`,
+    );
+
+    const runtime = await prepareAgent(initialized.agentRoot);
+    const manifest = JSON.parse(
+      await readFile(
+        resolve(runtime, ".opencomputer", "reactive.json"),
+        "utf8",
+      ),
+    ) as {
+      tools: string[];
+      resultTool?: { id: string; output: Record<string, unknown> };
+    };
+    assert.deepEqual(manifest.tools, ["lookup", "report"]);
+    assert.deepEqual(manifest.resultTool, {
+      id: "report",
+      output: {
+        type: "object",
+        properties: {
+          branch: { type: "string" },
+          pr: { type: "object", properties: { number: { type: "integer" } }, required: ["number"] },
+        },
+        required: ["branch"],
+        additionalProperties: false,
+      },
+    });
+    const tools = await import(
+      `${pathToFileURL(resolve(runtime, "tools", "report.js")).href}?test=${crypto.randomUUID()}`
+    ) as { report: { id: string; result?: boolean }; lookup: { result?: boolean } };
+    assert.equal(tools.report.result, true);
+    assert.equal("result" in tools.lookup, false);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("the compiler rejects a result tool without an output schema", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-result-tool-"));
+  const root = resolve(parent, "app");
+  try {
+    const initialized = await initializeAgentProject(root);
+    await mkdir(resolve(initialized.agentRoot, "tools"), { recursive: true });
+    await writeFile(
+      resolve(initialized.agentRoot, "tools", "report.ts"),
+      `import { defineTool } from "@opencomputer/agent";
+
+export const report = defineTool({
+  name: "report",
+  description: "Report the branch",
+  result: true,
+  async run() {
+    return { branch: "task/1" };
+  },
+});
+`,
+    );
+    await assert.rejects(
+      prepareAgent(initialized.agentRoot),
+      /tools\/report\.ts defineTool\("report"\) is the result tool and must declare output/,
+    );
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("the compiler rejects more than one result tool per agent", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-result-tool-"));
+  const root = resolve(parent, "app");
+  try {
+    const initialized = await initializeAgentProject(root);
+    await mkdir(resolve(initialized.agentRoot, "tools"), { recursive: true });
+    for (const name of ["first", "second"]) {
+      await writeFile(
+        resolve(initialized.agentRoot, "tools", `${name}.ts`),
+        `import { defineTool } from "@opencomputer/agent";
+
+export const ${name} = defineTool({
+  name: "${name}",
+  description: "Report ${name}",
+  output: { type: "object" },
+  result: true,
+  async run() {
+    return {};
+  },
+});
+`,
+      );
+    }
+    await assert.rejects(
+      prepareAgent(initialized.agentRoot),
+      /An agent may declare one result tool; found "first" in tools\/first\.ts and "second" in tools\/second\.ts/,
+    );
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
 test("the compiler packages agent source modules outside the tools directory", async () => {
   const parent = await mkdtemp(resolve(tmpdir(), "opencomputer-source-modules-"));
   const root = resolve(parent, "app");

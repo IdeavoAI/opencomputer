@@ -343,8 +343,29 @@ export interface ToolDefinition<
   readonly description: string;
   readonly input?: ToolInputSchema;
   readonly output?: ToolInputSchema;
+  /**
+   * The agent's result tool: its latest committed output is the session's
+   * `result`. At most one tool per agent; `output` is required so the host
+   * can validate every value before it is committed.
+   */
+  readonly result?: true;
   run(context: ToolExecutionContext): Output | Promise<Output>;
 }
+
+/**
+ * What `defineTool()` accepts. A result tool must declare `output`: the
+ * schema is pinned in the deployment and the host rejects a value that does
+ * not match it before anything is committed.
+ */
+export type ToolInput<Output extends DataValue = DataValue> = {
+  name: string;
+  description: string;
+  input?: ToolInputSchema;
+  run(context: ToolExecutionContext): Output | Promise<Output>;
+} & (
+  | { result?: false; output?: ToolInputSchema }
+  | { result: true; output: ToolInputSchema }
+);
 
 export type {
   DocumentMemoryInput,
@@ -1117,13 +1138,9 @@ export function registerOutbox(
   });
 }
 
-export function defineTool<Output extends DataValue = DataValue>(input: {
-  name: string;
-  description: string;
-  input?: ToolInputSchema;
-  output?: ToolInputSchema;
-  run(context: ToolExecutionContext): Output | Promise<Output>;
-}): ToolDefinition<Output> {
+export function defineTool<Output extends DataValue = DataValue>(
+  input: ToolInput<Output>,
+): ToolDefinition<Output> {
   const id = identifier(input.name, "defineTool");
   if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
     throw new Error(
@@ -1139,10 +1156,20 @@ export function defineTool<Output extends DataValue = DataValue>(input: {
   if (input.output && typeof input.output !== "object") {
     throw new Error("defineTool output must be a JSON Schema object");
   }
+  if (input.result !== undefined && typeof input.result !== "boolean") {
+    throw new Error("defineTool result must be true or false");
+  }
+  if (input.result === true && !input.output) {
+    throw new Error(
+      "defineTool result tools require an output schema; the host validates every result against it before committing",
+    );
+  }
+  const { result, ...definition } = input;
   return Object.freeze({
     kind: "tool" as const,
     version: 1 as const,
-    ...input,
+    ...definition,
+    ...(result === true ? { result: true as const } : {}),
     id,
     name: id,
   });
