@@ -77,6 +77,8 @@ export type SessionLabels = Record<string, string>;
 /** A session as `GET /sessions/<id>` returns it. */
 export interface Session {
   id: string;
+  /** The project the agent belongs to. */
+  projectId?: string;
   agentId: string;
   /** The deployment the session pins. */
   deploymentId: string;

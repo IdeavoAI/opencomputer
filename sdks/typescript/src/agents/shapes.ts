@@ -246,6 +246,7 @@ const sessionMemoryBinding: Shape<SessionMemoryBinding> = (value, path) => {
 
 export const session: Shape<Session> = object({
   id: string,
+  projectId: optional(string),
   agentId: string,
   deploymentId: string,
   environment: optional(environment),

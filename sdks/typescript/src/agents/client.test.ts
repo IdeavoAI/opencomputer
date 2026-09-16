@@ -291,6 +291,26 @@ describe("OpenComputer client", () => {
     expect(await client.sessions.get("extra")).toEqual({ ...session, nextThing: { added: true } });
   });
 
+  // `projectId` is on every session the API returns and an authorization
+  // check reads it. The session shape did not name it: the type did not
+  // offer it, and a value of the wrong type passed through unchecked.
+  it("reads projectId on a session, checks it is a string, and accepts a session that has none", async () => {
+    const session = { id: "ses_1", agentId: "worker", deploymentId: "dep_1", status: "idle", source: "api", turns: [], createdAt: "t", updatedAt: "t" };
+    const api = fakeApi({
+      "GET /api/managed-agents/sessions/ses_1": () => Response.json({ ...session, projectId: "prj_1" }),
+      "GET /api/managed-agents/sessions/wrong": () => Response.json({ ...session, id: "wrong", projectId: 42 }),
+      "GET /api/managed-agents/sessions/older": () => Response.json({ ...session, id: "older" }),
+    });
+    const client = oc(api);
+    const got = await client.sessions.get("ses_1");
+    expect(got.projectId).toBe("prj_1");
+    expectTypeOf(got.projectId).toEqualTypeOf<string | undefined>();
+    const wrong = await client.sessions.get("wrong").catch((cause: unknown) => cause);
+    expect(wrong).toMatchObject({ code: "invalid_response", status: 200 });
+    expect((wrong as Error).message).toMatch(/projectId/);
+    expect((await client.sessions.get("older")).projectId).toBeUndefined();
+  });
+
   // Application data is the application's. A body whose JSON has a key named
   // `__proto__` is valid JSON, and parsing keeps it as an own key; a
   // validator that rebuilt the object by assignment set the copy's prototype
