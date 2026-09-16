@@ -311,6 +311,49 @@ test("attach sends turns and interrupts through the app's routes without duplica
   await view.unmount();
 });
 
+test("stop rejects when the interrupt request fails, sets error, and can be retried", async (t) => {
+  const session = fakeSession("ses-stop");
+  let interruptFails = true;
+  const fetchWithFailingInterrupt = async (input: string | URL | Request, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url.endsWith("/interrupt") && interruptFails) {
+      return Response.json(
+        { error: { code: "interrupt_unavailable", message: "The interrupt could not be delivered" } },
+        { status: 503 },
+      );
+    }
+    return session.fetch(input, init);
+  };
+  const view = mount(t, { sessionId: "ses-stop", basePath: "/app/agent", fetch: fetchWithFailingInterrupt, pollIntervalMs: 5 });
+  await view.render();
+  session.append({ turnId: "t1", type: "turn.started", data: {} });
+  await view.until((result) => result.isRunning, "running turn");
+
+  let rejection: unknown;
+  await act(async () => {
+    rejection = await view.result().stop().catch((cause: unknown) => cause);
+  });
+  assert.ok(rejection instanceof SendError, "a failed interrupt rejects");
+  assert.equal(rejection.status, 503);
+  assert.equal(rejection.code, "interrupt_unavailable");
+  assert.equal(view.result().error, "The interrupt could not be delivered");
+  assert.equal(view.result().isRunning, true, "work continues; the caller can retry");
+
+  interruptFails = false;
+  await act(async () => {
+    await view.result().stop();
+  });
+  assert.equal(
+    session.calls.filter((call) => call.method === "POST" && call.path === "/app/agent/sessions/ses-stop/interrupt").length,
+    1,
+    "the retry reached the route",
+  );
+  session.append({ turnId: "t1", type: "turn.cancelled", data: { reason: "interrupted" } });
+  const stopped = await view.until((result) => !result.isRunning, "cancellation after the retry");
+  assert.equal(stopped.error, "The interrupt could not be delivered", "the earlier failure stays visible until a newer one");
+  await view.unmount();
+});
+
 test("attach reports a failed turn and a rejected send", async (t) => {
   const session = fakeSession("ses-4");
   const view = mount(t, { sessionId: "ses-4", basePath: "/app/agent", fetch: session.fetch, pollIntervalMs: 5 });

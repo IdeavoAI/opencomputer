@@ -237,9 +237,11 @@ for session status.
 
 ## Stop and reopen
 
-`stop()` requests an interrupt without spending a model turn. It returns
-`Promise<void>` and reports request failures through `error`; a resolved
-promise is **not** confirmation that execution has stopped. Watch the running
+`stop()` requests an interrupt without spending a model turn. It resolves
+once the request was accepted and rejects with a `SendError` when it was
+not, after setting `error`, so a control that showed a stopping state can be
+re-enabled and the request retried; a resolved promise is **not**
+confirmation that execution has stopped. Watch the running
 turn settle in `turns`. Stop affects that turn, so the next queued turn can
 start afterwards. The [interrupt contract](/agents/api#end-and-interrupt)
 describes settlement and remote-command guarantees.
@@ -325,7 +327,7 @@ code.
 | `messages` | User and assistant messages in log order |
 | `turns` | Turns with status, input, messages, tool calls, result and failure |
 | `send(text, options?)` | Submit a turn; resolve with a receipt or reject with `SendError` |
-| `stop()` | Request an interrupt; errors appear in `error`, settlement in `turns` |
+| `stop()` | Request an interrupt; rejects with `SendError` on a failed request, settlement arrives in `turns` |
 | `sessionId` | Attached session, or the created one after the first send |
 | `isRunning` | Running activity or this instance's unsettled admissions; not a session status |
 | `isReplaying` | Attach mode: existing history is still loading |

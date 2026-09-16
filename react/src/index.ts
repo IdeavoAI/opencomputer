@@ -140,7 +140,12 @@ export interface UseAgentResult {
    * settles when the turn ends.
    */
   send: (value: string, options?: SendOptions) => Promise<SendReceipt>;
-  /** Requests an interrupt. Request failures set `error`; this promise does not confirm settlement. */
+  /**
+   * Requests an interrupt. Rejects with a `SendError` when the request was
+   * not answered with success, after setting `error`, so a control can be
+   * re-enabled and the request retried; a resolved promise does not confirm
+   * settlement, which arrives through `turns`.
+   */
   stop: () => Promise<void>;
   sessionId: string | undefined;
   /** A turn is running in the log, or a locally admitted turn has not settled. Queued replay alone is false. */
@@ -618,7 +623,9 @@ export function useAgent(
         { method: "POST" },
       );
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      const failure = asSendError(cause);
+      setError(failure.message);
+      throw failure;
     }
   }, [request]);
 
