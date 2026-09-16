@@ -132,14 +132,15 @@ after a lost reply learns what became of the turn. `list` takes `project`,
 
 ### Create and submit
 
-Create the session, then send its first turn. Resolve the deployment once
-when composing the submission and retain its ID, both keys and the inputs.
-Retrying either call then returns the same session or turn, even if the
-agent is redeployed between attempts.
+Create the session, then send its first turn. Address the agent by its
+environment alias and retain both keys and the inputs. Retrying either call
+then returns the same session or turn, even if the agent is redeployed
+between attempts: the platform records the deployment the session started
+on. Pinning a `deploymentId` is an advanced option, not part of this flow.
 
 ```typescript
 const { session } = await oc.sessions.create(
-  { deploymentId, environment: "development", labels: { request: taskId } },
+  { agentId: "<agent-id>@development", labels: { request: taskId } },
   { idempotencyKey: taskId },
 );
 const receipt = await oc.sessions.turns.send(session.id, {
@@ -179,7 +180,7 @@ one. Results retain their turn provenance and can outlive later work; see
 if it does not exist, then a session bound to it, and reports both ids and
 whether each already existed. These are two requests, not an atomic operation:
 the document remains if session creation fails. Retries reuse the document
-and converge on the session while the agent's deployment and bindings remain
+and converge on the session while the agent, environment and bindings remain
 unchanged.
 
 ```typescript
@@ -236,13 +237,10 @@ The result:
 | `session.created` | `false` when the key had already created this session |
 | `session.status`, `session.executionMode` | As the create response reported them |
 
-The helper resolves the environment's agent alias on every call and cannot
-pin a deployment. If that alias changes between a successful create and its
-retry, the retry fails with `idempotency_key_reused`. A new key would create
-another session; it does not recover a lost response. When retries must
-survive redeploys, create/read the document separately and pass its binding
-to [`sessions.create`](#create-and-submit) with a retained `deploymentId`
-and key.
+The helper addresses the environment's agent alias on every call; the
+platform records the deployment the session started on, so a retry after a
+redeploy returns the same session. A new key would create another session;
+it does not recover a lost response.
 
 `startSessionOnDocument({ apiKey, baseUrl?, fetch?, ...params })`, exported
 from the same subpath, is the standalone form of the call for code that

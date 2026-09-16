@@ -48,7 +48,7 @@ code.
 
 ## Sessions
 
-A session is a durable conversation with one deployed agent. It pins the
+A session is a durable conversation with one deployed agent. It keeps the
 deployment it was created on; see [Sessions and turns](/agents/sessions).
 
 | Operation | Method and path | Success |
@@ -78,8 +78,8 @@ curl -X POST 'https://app.opencomputer.dev/api/managed-agents/sessions' \
 
 | Field | Meaning |
 | --- | --- |
-| `agentId` | `<agent-id>@development` or `<agent-id>@production`. The alias selects the environment and the deployment active in it. A bare agent ID means `production`. |
-| `deploymentId` | Pin one deployment instead of resolving an alias. Send `environment` with it; it may be omitted only when the deployment is promoted to exactly one environment. |
+| `agentId` | `<agent-id>@development` or `<agent-id>@production`. The alias selects the environment and the deployment active in it. A bare agent ID means `production`. This is how applications address an agent; which deployment runs the session is the platform's choice, recorded on the session. |
+| `deploymentId` | Advanced: pin one deployment instead of resolving an alias, for reproducibility or testing. Send `environment` with it; it may be omitted only when the deployment is promoted to exactly one environment. |
 | `environment` | `development` or `production`. Optional with `agentId`; it must agree with the alias. |
 | `memory` | Bindings keyed by resource ID, at most eight. Needs a deployed agent and an environment. Shapes on [Document memory](/agents/document-memory#session-bindings). |
 | `source` | `api` (default), `playground`, `channel` or `webhook`. The dashboard groups sessions by it. |
@@ -91,12 +91,22 @@ The session starts without a turn; send one with the turns route.
 `Idempotency-Key` (at most 256 characters) makes a retry safe. The key
 identifies the session within your organization:
 
-- The same key with the same agent, deployment, environment and memory
-  bindings returns the existing session with `200`.
-- Anything else under that key is `409 idempotency_conflict`. The deployment
-  is part of the identity, so after a redeploy the same key conflicts:
-  a session pins its deployment, and new code needs a new session under a
-  new key.
+- The same key with the same request, meaning the same `agentId` (or the
+  same pinned `deploymentId`), environment and memory bindings, returns the
+  existing session with `200`, together with the deployment it pinned when
+  it was first created. That holds after a redeploy or a rollback: the
+  session keeps the deployment it started with, and your retry does not
+  need to know which one that was. A new session under a new key gets the
+  deployment active at that time.
+- Anything else under that key is `409 idempotency_conflict`: another
+  agent, environment or pinned deployment, or different memory bindings.
+  Pinning the deployment the session already holds counts as the same
+  request.
+- Two identical requests under one key that arrive together create one
+  session; both answers name it, one with `201` and the other with `200`.
+- Sessions created before this rule was recorded keep the earlier one: a
+  replay through an alias succeeds only while the alias still resolves to
+  the deployment the session pinned.
 - `503 memory_admission_unconfirmed` means the memory grants were not
   confirmed in time. Retry with the same key; the retry resumes the wait.
 - `503 session_publication_unconfirmed` means the session exists but its
@@ -117,7 +127,7 @@ insufficient_credits`.
 
 | Field | Meaning |
 | --- | --- |
-| `id`, `agentId`, `deploymentId` | The session and the deployment it pins |
+| `id`, `agentId`, `deploymentId` | The session and the deployment it runs on, chosen when it was created |
 | `projectId` | The project the agent belongs to |
 | `environment` | `development` or `production`, when the request named one |
 | `status` | `new`, `connecting`, `idle`, `running`, `stopping`, `waiting_runtime`, `suspending`, `suspended`, `resuming`, `failed` or `ended` |
@@ -289,16 +299,16 @@ An application that turns a form submission into agent work makes two calls,
 each with its own key, and keeps what it sent until the second one is
 acknowledged:
 
-1. Resolve the deployment once, where the submission is composed (for
-   example when the form opens), and pin it: `POST /sessions` with
-   `Idempotency-Key: <submission-id>`, the `deploymentId` and `environment`.
-   A retry then carries the deployment the submission was composed against,
-   even if the alias has moved since.
+1. `POST /sessions` with `Idempotency-Key: <submission-id>` and
+   `agentId: <agent-id>@<environment>`. The platform chooses the deployment
+   active in that environment and records it on the session; a retry under
+   the same key returns that session, even if the alias has moved since.
+   The application never discovers, verifies or stores a deployment id.
 2. `POST /sessions/<id>/turns` with `Idempotency-Key: <submission-id>/start`,
    the text and the `payload`.
 
-Keep the submission (its id, the pinned deployment, the text and the
-payload) until the turns call answers, with `duplicate: false` or `true`.
+Keep the submission (its id, the text and the payload) until the turns call
+answers, with `duplicate: false` or `true`.
 A lost reply at either step is retried with the same body and the same key:
 the first step returns the same session, the second the same turn. A
 session that exists without a turn is work that was never admitted; only the

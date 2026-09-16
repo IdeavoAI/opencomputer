@@ -61,9 +61,10 @@ export interface CallOptions {
 
 export interface CreateSessionOptions extends CallOptions {
   /**
-   * At most 256 characters. The same key with the same agent, deployment,
-   * environment and memory bindings returns the existing session; anything
-   * else under the key is `409 idempotency_conflict`.
+   * At most 256 characters. The same key with the same agent (or the same
+   * pinned deployment), environment and memory bindings returns the
+   * existing session with the deployment it started on, after a redeploy
+   * too; anything else under the key is `409 idempotency_conflict`.
    */
   idempotencyKey?: string;
 }

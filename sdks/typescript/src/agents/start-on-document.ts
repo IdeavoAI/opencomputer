@@ -85,9 +85,10 @@ export async function sessionIdempotencyKey(idempotencyKey: string): Promise<str
  *   is reserved and fails with code `memory_document_deleted`, since a
  *   binding to it would fail admission.
  * - The session is created with an `Idempotency-Key` derived from
- *   `idempotencyKey`; the same key with the same agent, deployment,
- *   environment and bindings returns the existing session with
- *   `created: false`. Anything else under the same key fails with code
+ *   `idempotencyKey`; the same key with the same agent, environment and
+ *   bindings returns the existing session with `created: false`, after a
+ *   redeploy too, since the platform records the deployment the session
+ *   started on. Anything else under the same key fails with code
  *   `idempotency_key_reused`.
  */
 export async function startOnDocument(http: Http, params: StartOnDocumentParams): Promise<StartOnDocumentResult> {
@@ -149,7 +150,7 @@ export async function startOnDocument(http: Http, params: StartOnDocumentParams)
         409,
         "idempotency_key_reused",
         `Idempotency key ${JSON.stringify(params.idempotencyKey)} already created a session with a different ` +
-          "agent, deployment, environment or memory bindings. Use a new key to start another session; " +
+          "agent, environment or memory bindings. Use a new key to start another session; " +
           "the document was left as it is.",
       );
     }

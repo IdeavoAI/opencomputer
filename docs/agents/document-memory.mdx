@@ -84,9 +84,11 @@ Session inspection returns a `memory` array. Entries contain `resource`,
 `scope`, optional document `id`, `access` and current `writable`. It is false
 for read-only bindings, frozen/deleted documents and ended sessions.
 
-Reusing a session-create `Idempotency-Key` requires identical agent, deployment,
-environment and bindings; incompatible inputs return `409 idempotency_conflict`.
-The [management API](/agents/api#create) page has the full rules.
+Reusing a session-create `Idempotency-Key` requires the same agent (or the
+same pinned deployment), environment and bindings; incompatible inputs return
+`409 idempotency_conflict`. The session keeps the deployment it started on,
+so a redeploy does not change what the key returns. The
+[management API](/agents/api#create) page has the full rules.
 
 ### Start a session on a new document
 
@@ -116,16 +118,15 @@ const { document, session } = await oc.sessions.startOnDocument({
   left as it is; `document` is ignored then. A deleted id is reserved and
   fails before any session is created.
 - The session is created with an `Idempotency-Key` derived from
-  `idempotencyKey`. The same key with the same agent, deployment, environment
-  and bindings returns the existing session; anything else under that key
+  `idempotencyKey`. The same key with the same agent, environment and
+  bindings returns the existing session; anything else under that key
   fails with code `idempotency_key_reused`. `access` (default `read-write`),
   `memory` for further bindings and `source` are passed through.
 
-The helper resolves the agent's environment alias on each attempt. A
-redeploy can therefore make a retry conflict even if the first attempt
-created the session. Do not change the key to recover a lost response: that
-would create another session. For retries across redeploys, use separate
-document and session calls with a retained deployment ID, as described below.
+The helper addresses the agent by its environment alias; the platform
+records the deployment the session started on, so a retry after a redeploy
+returns the same session. Do not change the key to recover a lost response:
+that would create another session.
 
 The CLI does the same for a Development session:
 
@@ -141,8 +142,8 @@ run the first turn at once, and `--json` for the ids.
 
 Over HTTP, send `PUT .../documents/<id>` with `If-None-Match: *`, treat `412`
 as "exists" (then `GET` it; `404` means the id was deleted), and `POST
-/api/managed-agents/sessions` with the document binding, a retained
-`deploymentId`, `environment` and `Idempotency-Key`; `201` created the
+/api/managed-agents/sessions` with the document binding,
+`agentId: <agent-id>@<environment>` and `Idempotency-Key`; `201` created the
 session, `200` returned the one that key had already created. Keep that
 envelope unchanged for retries. See [session creation](/agents/api#create)
 for the body and the

@@ -71,7 +71,7 @@ Applications that keep notes in [memory](https://opencomputer.dev/agents/memory)
 const { document, session } = await oc.sessions.startOnDocument({
   projectId: "prj_…", environment: "development", agent: "topic-worker",
   resource: "topics", documentId: "workshop", document: { title: "Workshop" },
-  idempotencyKey: `topic/workshop/${deploymentId}`,
+  idempotencyKey: "topic/workshop/1",
 });
 // document.created, session.created: false when they already existed.
 ```
