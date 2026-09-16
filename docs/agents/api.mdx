@@ -18,6 +18,10 @@ an organization and reaches every project, agent and session in it. Keep it
 on the server; the [React integration](/agents/react) shows how a browser
 attaches through your own routes without seeing the key.
 
+Your server must authenticate callers and enforce which projects,
+environments, agents and sessions they may access. A list filter or session
+label is not an authorization boundary.
+
 Request and response bodies are JSON. Paths below are relative to the base
 URL; `<p>` is a project ID and `<r>` a memory resource ID. The
 [TypeScript client](/reference/typescript-sdk/agents) on
@@ -143,9 +147,7 @@ curl 'https://app.opencomputer.dev/api/managed-agents/sessions?project=<project-
 | `limit` | Rows per page, 1 to 100; default 50 |
 | `cursor` | The `nextCursor` of the previous page |
 
-Any other parameter is `400 invalid_query`, as is a malformed value. A
-project-scoped key lists its own project; naming another is
-`403 project_scope_violation`.
+Any other parameter is `400 invalid_query`, as is a malformed value.
 
 A row is `id`, `projectId`, `agentId`, `deploymentId`, `environment` (`null`
 when the session has none), `source`, `status`, `labels`, `createdAt`,
@@ -155,12 +157,16 @@ how many turns wait behind it, and the most recently finished turn as
 `{ id, status, at }` or `null`. Rows carry no `turns` and no `memory`; read
 `GET /sessions/<id>` for those.
 
-Rows are ordered by `createdAt`, newest first, then by `id`, and the order
-never changes: a session that is updated does not move, so a traversal with
-`cursor` sees every row exactly once even while sessions are running. To show
-recent activity first, sort the page you hold by `updatedAt`. `nextCursor` is
-`null` on the last page. A session appears in the list as soon as its create
-call has returned.
+Rows are ordered by `createdAt`, newest first, then by `id`. Updates do not
+move rows. Keep the same filters while following `nextCursor`; `null` means
+there are no more matches after that cursor.
+
+Pagination is not a snapshot: each request applies the filters to the
+current rows. New sessions and sessions that newly match a status or label
+filter can fall before your cursor. Refresh from the first page to see
+them. Sorting fetched rows by `updatedAt` orders only those rows, not all
+matching sessions. A successful create response confirms the session is
+listed.
 
 ### Labels
 
@@ -194,28 +200,39 @@ and repeating the patch is safe because each key takes the last write.
 ### End and interrupt
 
 `POST /sessions/<id>/end` ends the session. Queued and running turns are
-cancelled and memory write access is revoked; do not send further turns to
-it. `503 session_end_unconfirmed` means the session is ended but the memory
-revocation was not acknowledged; retry, or
-[freeze the document](/agents/document-memory#disable-agent-writes). Ending an
-ended session returns it unchanged.
+marked `cancelled` with reason `session_ended`, and no further turns are
+accepted. A `200` confirms memory write access is revoked.
+`503 session_end_unconfirmed` means the session ended but memory revocation
+was not acknowledged; retry the same end request, or
+[freeze the document](/agents/document-memory#disable-agent-writes).
+Repeating end confirms any pending memory revocation without ending the
+session again.
+
+The `session.ended` event is recorded before memory revocation is confirmed.
+Neither that event nor the end response waits for commands to stop; remote
+cleanup continues in the background. Interrupt provides command-settlement
+confirmation for the current turn, subject to the compatibility note below;
+it leaves queued turns available to run.
 
 `POST /sessions/<id>/interrupt` stops the running turn without spending a
-model turn. The response shows the session as `stopping` with the turn still
-`running`: the model loop is stopped, and every command the turn had started
-on its computer is stopped before the turn settles. The turn then settles as
-`cancelled` with reason `interrupted`, the session returns to `idle` and the
-next queued turn starts. A command that cannot be confirmed stopped is
-resolved by replacing the computer, and the turn settles once the
-replacement is confirmed; the turn's `turn.cancelled` event records how the
-stop settled ([Session events](/agents/events#turns)). An idle session is
-returned unchanged.
+model turn. The response acknowledges the stop request; it does not wait
+for completion. While stopping, the session is `stopping` and the turn
+remains `running`. Once the model loop and its commands have stopped, the
+turn becomes `cancelled` with reason `interrupted`, the session becomes
+`idle`, and the next queued turn can start.
 
-A session whose `executionMode` (reported when it is created) is `microvm`
-still cancels immediately: the response shows it `idle` with the turn
-already `cancelled`, the commands the turn started are not waited for, and
-its `turn.cancelled` event carries `reason` alone, none of the settlement
-fields, until sessions in that mode settle the same way.
+If a command cannot be confirmed stopped, OpenComputer terminates its
+computer before settling the turn. The next command uses a fresh computer
+with the session's workspace. The cancellation event records the
+[settlement details](/agents/events#turns). An idle session is returned
+unchanged. Stopping does not undo files already written or external effects.
+
+<Note>
+  Sessions created with `executionMode: "microvm"` cancel immediately on
+  interrupt, without waiting for their commands to stop. They do not enter
+  `stopping`, and their cancellation events have no settlement fields.
+  Check the creation response when this guarantee matters to your app.
+</Note>
 
 ## Turns
 
@@ -242,7 +259,7 @@ are present they must be equal, else `400 invalid_turn`.
 | --- | --- |
 | `input` | The user text for this turn. Required, not empty. |
 | `idempotencyKey` | Optional. The key in body form, for a proxied browser send; equal to the header when both are present. |
-| `mode` | `queue` (default): run after earlier turns. `steer`: deliver into the running turn when the runtime supports it, otherwise queue. `interrupt`: cancel running turns and run next. |
+| `mode` | `queue` (default): run after earlier turns. `steer`: deliver into the running turn when the runtime supports it, otherwise queue. `interrupt`: interrupt running turns and run next, with the [same settlement behavior](#end-and-interrupt) as the interrupt route. |
 | `payload` | Optional. A JSON value for the agent, at most 32 KB encoded. It reaches the agent as [`useInput().payload`](/agents/inputs) with `source: "user"`, next to the text, and is recorded on the turn's `message.received` event. The text stays the message; the payload is structured context the agent reads. |
 
 The response is `202 { turnId, status, duplicate }` for a new turn and

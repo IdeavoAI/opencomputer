@@ -134,15 +134,16 @@ export interface UseAgentResult {
   turns: Turn[];
   /**
    * Starts a turn. Resolves with the admission receipt; rejects with a
-   * `SendError` when no turn was admitted, so a draft can be kept. In create
-   * mode the first call creates the session and the promise settles when the
-   * turn ends.
+   * `SendError` on refusal or an unconfirmed response. A lost response may
+   * follow admission: retain the input and idempotency key for retries.
+   * In create mode the first call creates the session and the promise
+   * settles when the turn ends.
    */
   send: (value: string, options?: SendOptions) => Promise<SendReceipt>;
-  /** Interrupts the running turn. */
+  /** Requests an interrupt. Request failures set `error`; this promise does not confirm settlement. */
   stop: () => Promise<void>;
   sessionId: string | undefined;
-  /** A turn is admitted and not yet settled by the log. */
+  /** A turn is running in the log, or a locally admitted turn has not settled. Queued replay alone is false. */
   isRunning: boolean;
   /** Attach mode: true until the existing history has been replayed. */
   isReplaying: boolean;

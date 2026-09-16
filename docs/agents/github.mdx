@@ -9,8 +9,8 @@ installation.
 
 ## Declare access
 
-Declare the maximum permissions this agent needs, then select the connection
-with `useConnection()`:
+Declare the permissions the agent needs and reference the connection from its
+agent function:
 
 ```tsx
 import {
@@ -39,15 +39,16 @@ The supported permissions are `actions`, `checks`, `contents`, `issues`,
 `metadata`, and `pull_requests`. `metadata` is read-only. Request only what the
 agent needs.
 
-`useConnection(github)` activates the declared connection for the agent. At
-session startup, OpenComputer sends the declaration's exact `permissions`
-object when it asks GitHub to mint the installation token. GitHub does not let
-that token exceed the permissions granted to the App installation.
+GitHub access applies to the session, not to an individual render. OpenComputer
+mints a token with the combined permissions of the deployment's declared
+GitHub connections; if one declares read access and another write access for the
+same permission, the token requests write access. Omitting or conditionally
+calling `useConnection(github)` does not withhold or revoke that token.
 
 Effective authority is therefore the intersection of:
 
 - the managed OpenComputer GitHub App's permission ceiling;
-- the permissions declared in `githubApp({ permissions })`; and
+- the combined permissions declared in `githubApp({ permissions })`; and
 - the repositories selected in the attached GitHub installation.
 
 ## Install the App
@@ -78,7 +79,7 @@ current selection from the connection rather than holding a GitHub credential
 of its own:
 
 ```text
-GET /projects/<p>/github/repositories?environment=<env>&cursor=&limit=
+GET /projects/<project-id>/github/repositories?environment=development&limit=100
 ```
 
 `environment` is `development` or `production` and is required. `limit` is at
@@ -102,7 +103,7 @@ most 100, the default; `cursor` is the `nextCursor` of the previous page.
 The list is read live from GitHub each time, with a token minted for that read
 that can see repository metadata and nothing else. OpenComputer keeps no copy:
 change the selection in GitHub's installation settings and the next read shows
-it. It is available to the organization's API key, not to project tokens.
+it. Call this route from your server with an organization API key.
 
 | Status | Code | Meaning |
 | --- | --- | --- |
@@ -124,16 +125,16 @@ gh pr create --repo acme/service --fill
 gh api repos/acme/service/pulls
 ```
 
-OpenComputer mints a GitHub installation token whose permissions are limited
-to those declared by the deployed agent. GitHub installation tokens expire
-after about one hour; the agent does not manage that. Before a command is
-dispatched, the token is renewed if it would expire before the command's
-allowed duration is up, so a `git push` or `gh pr create` late in a long
-session, or on a computer that has been running for most of an hour, uses a
-token that outlives the command. Git and `gh` both pick up the renewed token
-without any change to how the agent calls them. Renewal never widens what the
-token can do: it carries the same declared permissions against the
+GitHub installation tokens expire after about one hour. Before dispatching a
+command, OpenComputer attempts renewal if the held token would expire within
+the command's allowed duration. Git and `gh` pick up a renewed token without
+changes to the command. Renewal uses the same declared permissions and the
 installation's current repository selection.
+
+If renewal fails, the command still runs with the held token and its GitHub
+requests may fail authentication. Detaching the connection prevents new
+tokens from being issued; it does not immediately revoke a token already on
+the computer. That token can remain usable until GitHub expires or revokes it.
 
 ### Understand GitHub permission responses
 
@@ -162,8 +163,8 @@ and
 [listing repositories accessible to an installation](https://docs.github.com/en/rest/apps/installations#list-repositories-accessible-to-the-app-installation).
 
 <Warning>
-  The short-lived token is available inside the eligible agent's sandbox as
-  `GH_TOKEN` and `GITHUB_TOKEN` for the operation. Code running in that sandbox
+  The short-lived token is available inside the agent's sandbox as
+  `GH_TOKEN` and `GITHUB_TOKEN`. Code running in that sandbox
   can read it. Do not print it, write it into source, add it to a Git remote,
   include it in a checkpoint, or send it to logs. Install the App only on
   repositories you are comfortable granting to the agent.

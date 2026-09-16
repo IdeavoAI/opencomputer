@@ -40,9 +40,6 @@
             "pages": [
               "agents/reactive-agents",
               "agents/sessions",
-              "agents/api",
-              "agents/events",
-              "agents/react",
               "agents/memory",
               "agents/schedules",
               "agents/webhooks",
@@ -53,6 +50,15 @@
               "agents/github",
               "agents/byok",
               "agents/deployments"
+            ]
+          },
+          {
+            "group": "Build an application",
+            "pages": [
+              "agents/react",
+              "reference/typescript-sdk/agents",
+              "agents/api",
+              "agents/events"
             ]
           },
           {
@@ -189,8 +195,7 @@
               "reference/typescript-sdk/pty",
               "reference/typescript-sdk/image",
               "reference/typescript-sdk/snapshots",
-              "reference/typescript-sdk/secrets",
-              "reference/typescript-sdk/agents"
+              "reference/typescript-sdk/secrets"
             ]
           },
           {

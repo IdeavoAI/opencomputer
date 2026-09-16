@@ -44,17 +44,18 @@ unknown type as informational and keep reading.
 | --- | --- | --- |
 | `session.created` | The session exists. Always the first event. | `agentId`, `deploymentId` |
 | `session.status_changed` | The session moved between `new`, `connecting`, `idle`, `running`, `stopping`, `waiting_runtime`, `suspending`, `suspended`, `resuming`, `failed` and `ended` | `from`, `to` |
-| `session.ended` | The owner ended the session. Queued and running turns were cancelled and memory writes revoked. | none |
+| `session.ended` | The session accepts no more turns; queued and running turns were marked cancelled. Memory revocation and remote cleanup may still be pending. | none |
 | `session.failed` | The session cannot continue | `code`, `message`: a [public failure](#public-failures) |
 
 `stopping` follows an [interrupt](/agents/api#end-and-interrupt) or an
 interrupt-mode turn: the session stays there until the stopped turn's
-commands are confirmed stopped or its computer is replaced, then `idle`
-follows and the next turn starts. A session whose `executionMode` is
-`microvm` does not pass through `stopping`: an interrupt cancels its turn
-immediately, without waiting for the turn's commands, and the
-`turn.cancelled` event carries `reason` alone, none of the settlement
-fields, until sessions in that mode settle the same way.
+commands are confirmed stopped or its computer is terminated, then `idle`
+follows and the next turn can start. See the API's compatibility note for
+sessions that cancel immediately instead.
+
+`session.ended` is not a command-settlement or memory-revocation receipt.
+The [end response](/agents/api#end-and-interrupt) confirms memory revocation;
+remote cleanup continues in the background.
 
 ### Turns
 
@@ -63,11 +64,18 @@ fields, until sessions in that mode settle the same way.
 | `message.received` | A turn was accepted; its input is recorded before anything runs | `input`: the user text; `mode`: `queue`, `steer` or `interrupt`; `payload`: the structured value the turn was sent with, when there was one |
 | `turn.queued` | The turn waits for earlier turns | `mode` |
 | `turn.steered` | The input was delivered into the running turn | `activeTurnId` |
-| `turn.interrupted` | This turn cancelled the turns that were running | `interruptedTurnIds` |
+| `turn.interrupted` | This turn requested interruption of the running turns | `interruptedTurnIds` |
 | `turn.started` | The runtime began the turn | none |
 | `turn.completed` | The turn finished and the session is idle again | none |
 | `turn.failed` | The turn stopped with an error | `code`, `message`, and `model` or `tool` when named: a [public failure](#public-failures) |
-| `turn.cancelled` | The turn was stopped by an interrupt, once the work it had started was stopped | `reason`: `interrupted`; `replacementTurnId` when an interrupt-mode turn replaced it; `settledAfterMs`: how long after the interrupt the turn settled; `operationsSettled`: how many commands were stopped; `computerTerminated`: `true` when a command could not be confirmed stopped and the computer was replaced |
+| `turn.cancelled` | The turn was cancelled by an interrupt or session end | `reason`: `interrupted` or `session_ended`; optional `replacementTurnId`, `settledAfterMs`, `operationsSettled`, `computerTerminated` |
+
+For an interrupt that waits for commands, `settledAfterMs` records the wait,
+`operationsSettled` counts the settled commands, and `computerTerminated`
+says whether stopping required terminating the computer. Cancellation with
+`reason: "session_ended"` has no settlement fields: it records the session's
+decision to end, before remote cleanup finishes. Immediate-cancellation
+sessions also omit these fields; see [End and interrupt](/agents/api#end-and-interrupt).
 
 #### Public failures
 
@@ -116,7 +124,7 @@ tool; the save itself is reported separately.
 `input` and `output` are JSON values, never JSON text: an object comes as an
 object, and a consumer reads it without parsing. Tool events recorded before
 these fields were introduced keep the shape they were recorded with, so the
-React hook's [`turns`](/agents/react#activity) shows those calls unnamed and
+React hook's [`turns`](/agents/react#hook-reference) shows those calls unnamed and
 without output; `messages` is unaffected.
 
 A successful call of the agent's [result tool](/agents/tools#the-session-result)
@@ -133,6 +141,8 @@ write, with `settledBy` naming the terminal event (`turn.completed`,
 `turn.failed` or `turn.cancelled`) and a `message` saying the turn ended
 first. A consumer therefore never sees a settled turn with a running call;
 one that keys rows on `callId` needs no rule of its own for the turn's end.
+This settles the call in the log; it does not strengthen the command-stop
+guarantees of the terminal turn event.
 
 ### Memory
 
@@ -168,10 +178,14 @@ reconnecting and completing work. See
 | Type | When | `data` |
 | --- | --- | --- |
 | `runtime.connected` | An agent runtime attached to the session | none |
-| `runtime.disconnected` | The runtime went away; a running turn is queued again and resumes on the next runtime | none |
+| `runtime.disconnected` | The runtime connection closed; running turns return to the queue to await a runtime | none |
 | `runtime.suspended` | The runtime was suspended between turns | none |
 | `runtime.resumed` | The runtime was resumed | none |
 | `runtime.log` | A line of runtime output or a platform milestone | `level`, `stream`, `message` for output; `phase` and `message` for milestones such as the runtime starting |
+
+A runtime disconnect does not prove that a command stopped or that its
+effects were undone. Follow the subsequent turn events to learn whether
+work continued or failed; see [Durability and recovery](/agents/sessions#durability-and-recovery).
 
 ### Agent renders
 
