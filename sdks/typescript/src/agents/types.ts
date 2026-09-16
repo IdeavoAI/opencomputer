@@ -389,8 +389,10 @@ export interface ProjectDetail {
 export interface AgentSummary {
   id: string;
   name: string;
-  activeAlias?: string;
-  activeDeploymentId?: string;
+  /** The alias of the active deployment, or `null` while the agent has none. */
+  activeAlias?: string | null;
+  /** `null` while the agent has no active deployment; the agent a new project creates starts that way. */
+  activeDeploymentId?: string | null;
   deploymentCount?: number;
   createdAt?: string;
   updatedAt?: string;

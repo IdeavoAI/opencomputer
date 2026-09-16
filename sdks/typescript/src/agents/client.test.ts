@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import { OpenComputer } from "./client.js";
 import { OpenComputerError } from "./errors.js";
 
@@ -154,6 +154,27 @@ describe("OpenComputer client", () => {
     expect((await client.deployments.list({ agentId: "worker" }))[0].id).toBe("dep_1");
     expect(api.last().path).toBe("/api/managed-agents/deployments?agentId=worker");
     expect((await client.deployments.get("dep_1")).alias).toBe("development");
+  });
+
+  // The agent a new project creates has no deployment yet, and the API lists
+  // it with `activeAlias: null, activeDeploymentId: null`. A validator that
+  // took only a string or an absence failed the whole list on that one row.
+  it("lists an agent that has no deployment yet: its activation fields are null and the list still comes back", async () => {
+    const api = fakeApi({
+      "GET /api/managed-agents/agents": () =>
+        Response.json({
+          agents: [
+            { id: "worker", name: "Worker", activeAlias: "development", activeDeploymentId: "dep_1", deploymentCount: 1, createdAt: "t", updatedAt: "t" },
+            { id: "fresh", name: "Fresh", activeAlias: null, activeDeploymentId: null, deploymentCount: 0, createdAt: "t", updatedAt: "t" },
+          ],
+        }),
+    });
+    const agents = await oc(api).agents.list();
+    expect(agents.map((agent) => agent.id)).toEqual(["worker", "fresh"]);
+    expect(agents[0]).toMatchObject({ activeAlias: "development", activeDeploymentId: "dep_1" });
+    expect(agents[1]).toMatchObject({ activeAlias: null, activeDeploymentId: null, deploymentCount: 0 });
+    expectTypeOf(agents[1]!.activeAlias).toEqualTypeOf<string | null | undefined>();
+    expectTypeOf(agents[1]!.activeDeploymentId).toEqualTypeOf<string | null | undefined>();
   });
 
   it("drives memory documents with the conditional headers the API requires", async () => {

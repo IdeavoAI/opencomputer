@@ -347,11 +347,13 @@ export const projectDetail: Shape<ProjectDetail> = object({
   schedules: array(jsonValue),
 });
 
+// `activeAlias` and `activeDeploymentId` are `null` while the agent has no
+// active deployment, which every agent a new project creates starts as.
 export const agentSummary: Shape<AgentSummary> = object({
   id: string,
   name: string,
-  activeAlias: optional(string),
-  activeDeploymentId: optional(string),
+  activeAlias: optional(nullable(string)),
+  activeDeploymentId: optional(nullable(string)),
   deploymentCount: optional(number),
   createdAt: optional(string),
   updatedAt: optional(string),
