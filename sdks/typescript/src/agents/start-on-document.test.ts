@@ -121,7 +121,7 @@ describe("sessions.startOnDocument", () => {
     const failure = await client(api.fetch).sessions.startOnDocument(params).catch((cause: unknown) => cause);
     expect(failure).toBeInstanceOf(OpenComputerError);
     expect(failure).toMatchObject({ status: 409, code: "idempotency_key_reused" });
-    expect((failure as Error).message).toMatch(/different agent, deployment, environment or memory bindings/);
+    expect((failure as Error).message).toMatch(/different agent, environment or memory bindings/);
   });
 
   it("refuses a deleted document id instead of creating a session that cannot bind it", async () => {

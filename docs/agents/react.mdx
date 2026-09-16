@@ -15,25 +15,27 @@ npm install @opencomputer/react
 ## Create the session on your server
 
 Use the [management client](/reference/typescript-sdk/agents) from trusted
-code. Resolve an allowed deployment when composing the submission, then
-retain its ID and a creation key for retries:
+code. Address the agent by its environment alias, with one key per
+submission:
 
 ```ts
 import { OpenComputer } from "@opencomputer/sdk/agents";
 
 const oc = new OpenComputer({ apiKey: process.env.OPENCOMPUTER_API_KEY! });
 const { session } = await oc.sessions.create(
-  { deploymentId, environment: "development", labels: { request: taskId } },
+  { agentId: "<agent-id>@development", labels: { request: taskId } },
   { idempotencyKey: taskId },
 );
 // Return session.id to the browser; use it when reopening this conversation.
 ```
 
-Here `deploymentId` and `taskId` belong to one submission. Validate the
-requested deployment against the user's permitted project, environment and
-agent. Retry an uncertain create with the same parameters and key; resolving
-an alias again could select a newer deployment. Creating a session and
-sending its first turn are separate calls with separate keys.
+`taskId` belongs to one submission. The platform chooses the deployment
+active in the environment and records it on the session, so retry an
+uncertain create with the same parameters and key: it returns the same
+session even after a redeploy. Nothing in your application handles
+deployment ids; pinning one is an advanced option of `sessions.create`.
+Creating a session and sending its first turn are separate calls with
+separate keys.
 
 ## Expose three routes
 
