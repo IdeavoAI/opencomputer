@@ -107,7 +107,7 @@ export interface Session {
 /** What `POST /sessions` returns. */
 export interface SessionCreated {
   session: Pick<Session, "id" | "status" | "createdAt"> & Partial<Session>;
-  /** The deployment the session pinned. */
+  /** The deployment the session pinned when it was first created; on a replay, that one, not the alias's current one. */
   deployment?: Deployment;
   /**
    * `true` when this call created the session (`201`); `false` when the
@@ -117,9 +117,15 @@ export interface SessionCreated {
 }
 
 export interface CreateSessionParams {
-  /** `<agent-id>@development` or `<agent-id>@production`; a bare id means `production`. */
+  /**
+   * `<agent-id>@development` or `<agent-id>@production`; a bare id means
+   * `production`. This is how an application addresses an agent: the
+   * platform chooses the deployment, records it on the session, and a
+   * replay of the same `idempotencyKey` returns that session and that
+   * deployment even after a redeploy.
+   */
   agentId?: string;
-  /** Pin one deployment instead of resolving an alias. Send `environment` with it. */
+  /** Advanced: pin one deployment instead of resolving an alias. Send `environment` with it. */
   deploymentId?: string;
   environment?: Environment;
   /** Bindings keyed by resource id, at most eight. */
