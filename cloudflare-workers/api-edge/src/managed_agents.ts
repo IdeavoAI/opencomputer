@@ -780,11 +780,12 @@ function publicSessionResult(value: unknown): unknown {
 
 /**
  * Platform-internal fields of the session envelope that no public route
- * documents: the runtime generation counter and the name of the memory
- * object the bindings were admitted against. Dropped by position, since the
- * name filter is for the fields it lists.
+ * documents: the runtime generation counter, the name of the memory object
+ * the bindings were admitted against, and the creation intent the platform
+ * compares on an idempotent replay. Dropped by position, since the name
+ * filter is for the fields it lists.
  */
-const PRIVATE_SESSION_FIELDS = new Set(["runtimeEpoch", "memoryObject"]);
+const PRIVATE_SESSION_FIELDS = new Set(["runtimeEpoch", "memoryObject", "creation"]);
 
 /**
  * One turn of the snapshot. `payload` is the caller's own JSON and passes

@@ -48,7 +48,7 @@ code.
 
 ## Sessions
 
-A session is a durable conversation with one deployed agent. It pins the
+A session is a durable conversation with one deployed agent. It keeps the
 deployment it was created on; see [Sessions and turns](/agents/sessions).
 
 | Operation | Method and path | Success |
@@ -127,7 +127,7 @@ insufficient_credits`.
 
 | Field | Meaning |
 | --- | --- |
-| `id`, `agentId`, `deploymentId` | The session and the deployment it pins |
+| `id`, `agentId`, `deploymentId` | The session and the deployment it runs on, chosen when it was created |
 | `projectId` | The project the agent belongs to |
 | `environment` | `development` or `production`, when the request named one |
 | `status` | `new`, `connecting`, `idle`, `running`, `stopping`, `waiting_runtime`, `suspending`, `suspended`, `resuming`, `failed` or `ended` |
@@ -299,16 +299,16 @@ An application that turns a form submission into agent work makes two calls,
 each with its own key, and keeps what it sent until the second one is
 acknowledged:
 
-1. Resolve the deployment once, where the submission is composed (for
-   example when the form opens), and pin it: `POST /sessions` with
-   `Idempotency-Key: <submission-id>`, the `deploymentId` and `environment`.
-   A retry then carries the deployment the submission was composed against,
-   even if the alias has moved since.
+1. `POST /sessions` with `Idempotency-Key: <submission-id>` and
+   `agentId: <agent-id>@<environment>`. The platform chooses the deployment
+   active in that environment and records it on the session; a retry under
+   the same key returns that session, even if the alias has moved since.
+   The application never discovers, verifies or stores a deployment id.
 2. `POST /sessions/<id>/turns` with `Idempotency-Key: <submission-id>/start`,
    the text and the `payload`.
 
-Keep the submission (its id, the pinned deployment, the text and the
-payload) until the turns call answers, with `duplicate: false` or `true`.
+Keep the submission (its id, the text and the payload) until the turns call
+answers, with `duplicate: false` or `true`.
 A lost reply at either step is retried with the same body and the same key:
 the first step returns the same session, the second the same turn. A
 session that exists without a turn is work that was never admitted; only the

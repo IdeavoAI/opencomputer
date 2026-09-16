@@ -2423,6 +2423,7 @@ describe("managed agents proxy", () => {
       runtimeToken: "internal-runtime-token",
       microvmId: "internal-vm",
       microvmState: "suspended",
+      creation: { agent: "worker@development" },
       createdAt: "2026-09-15T00:00:00.000Z",
       updatedAt: "2026-09-15T00:01:00.000Z",
       environment: "development",
@@ -2473,6 +2474,9 @@ describe("managed agents proxy", () => {
     expect(listBody.sessions[0].result).toEqual(result);
     expect(detailBody.result).toEqual(result);
     expect(detailBody.result).toEqual(listBody.sessions[0].result);
+    // The creation intent is admission metadata the platform compares on a
+    // replay; it is not part of the documented session.
+    expect(detailBody).not.toHaveProperty("creation");
     expect(detailBody.labels).toEqual({ user_id: "u-42", topic: "t" });
     expect((detailBody.turns as Array<Record<string, unknown>>)[0].payload).toEqual({
       userId: "u-42",
