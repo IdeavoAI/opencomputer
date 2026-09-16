@@ -889,6 +889,7 @@ export type PublicFailureCode =
   | "tool_failed"
   | "sandbox_timeout"
   | "sandbox_failed"
+  | "model_stream_failed"
   | "agent_failed";
 
 /**
@@ -923,6 +924,7 @@ const PUBLIC_FAILURE_MESSAGES: Record<PublicFailureCode, string> = {
   tool_failed: "A tool failed.",
   sandbox_timeout: "A sandbox command did not finish in time.",
   sandbox_failed: "The sandbox could not run this turn.",
+  model_stream_failed: "The model call failed before it finished.",
   agent_failed: GENERIC_FAILURE_MESSAGE,
 };
 
@@ -949,6 +951,11 @@ function validParameter(pattern: RegExp, value: string | undefined) {
     : undefined;
 }
 
+// The runtime's word that the conversation outgrew the model's window, in
+// the provider's text.
+const CONTEXT_TOO_LONG =
+  /context (?:length|window|overflow)|too long|exceeds? the (?:maximum )?(?:context|token)|ContextOverflow/i;
+
 // Message rules, first match wins. Each names the runtime error family it
 // recognizes; the captured group, if any, is the parameter.
 const FAILURE_MESSAGE_RULES: ReadonlyArray<{
@@ -971,11 +978,7 @@ const FAILURE_MESSAGE_RULES: ReadonlyArray<{
     pattern:
       /\bmodel (?:is )?not (?:found|available|supported)\b|ModelNotFound/i,
   },
-  {
-    code: "context_too_long",
-    pattern:
-      /context (?:length|window|overflow)|too long|exceeds? the (?:maximum )?(?:context|token)|ContextOverflow/i,
-  },
+  { code: "context_too_long", pattern: CONTEXT_TOO_LONG },
   {
     code: "model_rejected",
     pattern:
@@ -1011,6 +1014,71 @@ const FAILURE_MESSAGE_RULES: ReadonlyArray<{
   },
 ];
 
+// A model call's failure by the provider's typed class, as the runtime
+// records it in the failure's `failure` fields. A rejection stays one, a
+// route with no model is unavailable, and everything that failed in flight
+// (the transport, the provider, a broken or malformed response) is
+// `model_stream_failed`.
+const PROVIDER_FAILURE_CODES: Record<string, PublicFailureCode> = {
+  auth: "model_rejected",
+  quota: "model_rejected",
+  "content-filter": "model_rejected",
+  "rate-limit": "model_rejected",
+  "invalid-request": "model_rejected",
+  "no-route": "model_unavailable",
+  transport: "model_stream_failed",
+  internal: "model_stream_failed",
+  "invalid-output": "model_stream_failed",
+  unknown: "model_stream_failed",
+};
+
+/**
+ * The public failure from the typed fields the runtime recorded, when it
+ * recorded a provider failure: `{ class: "provider", subtype, model?,
+ * retry: { attempts } }`. The provider's text decides one thing only, on
+ * an invalid request: whether the conversation outgrew the model's window.
+ * The retry is named only when one happened; a call that bypasses the
+ * runtime's retry (compaction, titling) fails on its first attempt.
+ */
+function structuredFailure(
+  data: Record<string, unknown>,
+  firstLine: string,
+): PublicFailure | undefined {
+  const failure = record(data.failure);
+  if (!failure || failure.class !== "provider") return undefined;
+  const subtype = typeof failure.subtype === "string" ? failure.subtype : "";
+  const code = PROVIDER_FAILURE_CODES[subtype];
+  if (!code) return undefined;
+  if (subtype === "invalid-request" && CONTEXT_TOO_LONG.test(firstLine)) {
+    return {
+      code: "context_too_long",
+      message: PUBLIC_FAILURE_MESSAGES.context_too_long,
+    };
+  }
+  const model = validParameter(
+    MODEL_ID,
+    typeof failure.model === "string" ? failure.model : undefined,
+  );
+  if (code === "model_unavailable" && model) {
+    return {
+      code,
+      message: `The model ${model} is not available to this agent.`,
+      model,
+    };
+  }
+  if (code === "model_stream_failed") {
+    const retry = record(failure.retry);
+    const retried =
+      typeof retry?.attempts === "number" && retry.attempts > 1;
+    return {
+      code,
+      message: `The model call${model ? ` to ${model}` : ""} failed before it finished${retried ? " and its retry failed too" : ""}.`,
+      ...(model ? { model } : {}),
+    };
+  }
+  return { code, message: PUBLIC_FAILURE_MESSAGES[code] };
+}
+
 export function publicFailure(value: unknown): PublicFailure {
   const data = record(value) ?? {};
   const reason = typeof data.reason === "string" ? data.reason : "";
@@ -1020,6 +1088,10 @@ export function publicFailure(value: unknown): PublicFailure {
   // Classification reads only the first line: the sentence the runtime
   // wrote, before any stack frame or cause chain.
   const firstLine = message.split(/\r?\n/, 1)[0].trim();
+  // The runtime's typed fields come first; the text rules serve runtimes
+  // that recorded none.
+  const structured = structuredFailure(data, firstLine);
+  if (structured) return structured;
   for (const rule of FAILURE_MESSAGE_RULES) {
     const match = firstLine.match(rule.pattern);
     if (!match) continue;

@@ -236,6 +236,7 @@ export type FailureCode =
   | "tool_failed"
   | "sandbox_timeout"
   | "sandbox_failed"
+  | "model_stream_failed"
   | "agent_failed"
   | (string & {});
 
