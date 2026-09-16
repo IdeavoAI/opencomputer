@@ -345,7 +345,10 @@ stopped or the computer is replaced by a fresh one with the session's
 workspace, which the next command does on its own. The same rule settles
 an [interrupt](/agents/api#end-and-interrupt): the turn is cancelled only
 after its commands are confirmed stopped, and a stop that cannot be
-confirmed replaces the computer.
+confirmed replaces the computer. A session whose `executionMode` is
+`microvm` still cancels immediately on interrupt, without waiting for its
+commands to be confirmed stopped, until sessions in that mode settle the
+same way.
 
 ## Tools versus skills and MCP
 

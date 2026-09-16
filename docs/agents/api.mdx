@@ -211,6 +211,12 @@ replacement is confirmed; the turn's `turn.cancelled` event records how the
 stop settled ([Session events](/agents/events#turns)). An idle session is
 returned unchanged.
 
+A session whose `executionMode` (reported when it is created) is `microvm`
+still cancels immediately: the response shows it `idle` with the turn
+already `cancelled`, the commands the turn started are not waited for, and
+its `turn.cancelled` event carries `reason` alone, none of the settlement
+fields, until sessions in that mode settle the same way.
+
 ## Turns
 
 ```bash

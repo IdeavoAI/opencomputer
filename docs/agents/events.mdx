@@ -50,7 +50,11 @@ unknown type as informational and keep reading.
 `stopping` follows an [interrupt](/agents/api#end-and-interrupt) or an
 interrupt-mode turn: the session stays there until the stopped turn's
 commands are confirmed stopped or its computer is replaced, then `idle`
-follows and the next turn starts.
+follows and the next turn starts. A session whose `executionMode` is
+`microvm` does not pass through `stopping`: an interrupt cancels its turn
+immediately, without waiting for the turn's commands, and the
+`turn.cancelled` event carries `reason` alone, none of the settlement
+fields, until sessions in that mode settle the same way.
 
 ### Turns
 
