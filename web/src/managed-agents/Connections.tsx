@@ -565,9 +565,8 @@ export default function ManagedAgentConnections() {
               >
                 <option value="gmail">Gmail</option>
                 <option value="calendar">Google Calendar</option>
-                {/* Drive and Sheets are recognised everywhere else here, but
-                    are not offered until the platform has an auth config for
-                    them — without one the link call fails. */}
+                <option value="drive">Google Drive</option>
+                <option value="sheets">Google Sheets</option>
               </select>
             </div>
             <div className="grid gap-2">

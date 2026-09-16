@@ -123,16 +123,12 @@ without it, `listServices()` returns nothing.
 | --- | --- | --- |
 | `gmail` | `gmail.googleapis.com` | Google |
 | `calendar` | `www.googleapis.com` | Google |
-| `drive` | `www.googleapis.com` | Google * |
-| `sheets` | `www.googleapis.com` | Google * |
+| `drive` | `www.googleapis.com` | Google |
+| `sheets` | `www.googleapis.com` | Google |
 | `github` | GitHub's API | GitHub |
 
 The Google services share one grant; GitHub is its own. A name outside that
 list fails the build rather than the request.
-
-\* Drive and Sheets are recognised by the SDK but are not enabled on the
-platform yet — connecting one fails until an auth config exists for it. Gmail,
-Calendar and GitHub work today.
 
 <Note>
 There are two ways to reach GitHub, and they are for different jobs. Use
