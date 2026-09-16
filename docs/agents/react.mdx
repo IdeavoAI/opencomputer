@@ -227,7 +227,10 @@ with `settledBy` naming the turn's end ([Session events](/agents/events#tools)).
 Should a log carry no such record, the hook settles every call still
 `running` when the turn ends: `completed` when the turn completed, `failed`
 when it failed, `cancelled` when it was interrupted. A settled turn therefore
-never shows a running call. An activity timeline renders `turns` directly:
+never shows a running call. Tool events recorded before the current fields
+were introduced keep the shape they were recorded with, so `turns` shows
+those calls unnamed and without output; `messages` is unaffected. An
+activity timeline renders `turns` directly:
 
 ```tsx
 {turns.map((turn) => (

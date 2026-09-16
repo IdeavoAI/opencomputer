@@ -114,7 +114,10 @@ and key a tool call on `callId` when it is present. The memory tools
 tool; the save itself is reported separately.
 
 `input` and `output` are JSON values, never JSON text: an object comes as an
-object, and a consumer reads it without parsing.
+object, and a consumer reads it without parsing. Tool events recorded before
+these fields were introduced keep the shape they were recorded with, so the
+React hook's [`turns`](/agents/react#activity) shows those calls unnamed and
+without output; `messages` is unaffected.
 
 A successful call of the agent's [result tool](/agents/tools#the-session-result)
 is recorded with `result: true`; its `output` is the validated value, the
