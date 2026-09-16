@@ -64,7 +64,8 @@ gmail, calendar, drive and sheets; `github` for github.
 <CodeGroup>
 ```bash CLI
 opencomputer connection list
-# support              google   connected    ops@example.com
+# support            google  connected  ops@example.com            3f9c1e77-...
+# label              provider  status   account                    connection id
 ```
 
 ```bash API
@@ -86,8 +87,10 @@ does that for you; over the API, call the status route above. Agents are
 unaffected — `listServices()` reconciles before it answers.
 </Note>
 
-**Disconnecting one.** The CLI takes the label; the API takes the connection id
-from the listing above, and the service rather than the provider.
+**Disconnecting one.** The CLI takes the label or the id; the API takes the id
+from the listing above, and the service rather than the provider. If a label is
+ever ambiguous the CLI refuses rather than guessing — `--service <name>` picks
+one.
 
 <CodeGroup>
 ```bash CLI
