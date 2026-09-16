@@ -3470,6 +3470,54 @@ describe("managed agents proxy", () => {
       code: "model_rejected",
       message: "The model provider rejected the request.",
     });
+    // The runtime's typed model-call failures: the class decides, the
+    // provider's own text after the colon is never forwarded.
+    expect(
+      publicFailure({
+        message:
+          "Model call failed (provider.internal 502) for anthropic/claude-sonnet-4.6: upstream socket hang up never-return-this",
+      }),
+    ).toEqual({
+      code: "model_stream_failed",
+      message:
+        "The model call to anthropic/claude-sonnet-4.6 failed before it finished, and its retry failed too.",
+      model: "anthropic/claude-sonnet-4.6",
+    });
+    expect(
+      publicFailure({ message: "Model call failed (provider.transport): socket hang up" }),
+    ).toEqual({
+      code: "model_stream_failed",
+      message: "The model call failed before it finished, and its retry failed too.",
+    });
+    expect(
+      publicFailure({
+        message: "Model call failed (provider.invalid-output) for anthropic/claude-sonnet-4.6: The provider response ended with an unknown finish reason.",
+      }),
+    ).toEqual({
+      code: "model_stream_failed",
+      message:
+        "The model call to anthropic/claude-sonnet-4.6 failed before it finished, and its retry failed too.",
+      model: "anthropic/claude-sonnet-4.6",
+    });
+    expect(
+      publicFailure({ message: "Model call failed (provider.auth 401) for anthropic/claude-sonnet-4.6: invalid x-api-key sk-ant-never" }),
+    ).toEqual({
+      code: "model_rejected",
+      message: "The model provider rejected the request.",
+    });
+    expect(
+      publicFailure({ message: "Model call failed (provider.rate-limit 429): rate limited" }),
+    ).toEqual({
+      code: "model_rejected",
+      message: "The model provider rejected the request.",
+    });
+    expect(
+      publicFailure({ message: "Model call failed (provider.no-route) for openai/gpt-5: no route" }),
+    ).toEqual({
+      code: "model_unavailable",
+      message: "The model openai/gpt-5 is not available to this agent.",
+      model: "openai/gpt-5",
+    });
     expect(
       publicFailure({
         message: "prompt is too long: 214000 tokens > 200000 maximum context length",

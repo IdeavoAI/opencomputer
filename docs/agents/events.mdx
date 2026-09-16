@@ -83,6 +83,13 @@ A failure's `data` is a stable `code`, a fixed `message` for that code, and
 at most one parameter. The runtime's own error text is never sent; a failure
 no rule recognizes is `agent_failed`.
 
+A model call that fails or whose response stream breaks is retried once
+inside the turn before the turn fails; the retry appears in the log as a
+`runtime.log` milestone with `phase: "model_retry"`, the attempt and the
+failure's class (for example `provider.transport`), never the provider's
+own text. A rejection is not retried: credentials, quota, content policy
+and an invalid request are `model_rejected` at once.
+
 | `code` | Meaning | Parameter |
 | --- | --- | --- |
 | `interrupted` | The turn was stopped before it finished | |
@@ -96,6 +103,7 @@ no rule recognizes is `agent_failed`.
 | `tool_failed` | A tool failed | `tool`: the tool id, when the runtime named it |
 | `sandbox_timeout` | A sandbox command did not finish in time | |
 | `sandbox_failed` | The sandbox could not run the turn | |
+| `model_stream_failed` | The model call failed before it finished, or its response stream broke, and the retry failed too | `model`: the model id, when known |
 | `agent_failed` | Any other failure | |
 
 ### Messages

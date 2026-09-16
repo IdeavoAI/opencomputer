@@ -889,6 +889,7 @@ export type PublicFailureCode =
   | "tool_failed"
   | "sandbox_timeout"
   | "sandbox_failed"
+  | "model_stream_failed"
   | "agent_failed";
 
 /**
@@ -923,6 +924,8 @@ const PUBLIC_FAILURE_MESSAGES: Record<PublicFailureCode, string> = {
   tool_failed: "A tool failed.",
   sandbox_timeout: "A sandbox command did not finish in time.",
   sandbox_failed: "The sandbox could not run this turn.",
+  model_stream_failed:
+    "The model call failed before it finished, and its retry failed too.",
   agent_failed: GENERIC_FAILURE_MESSAGE,
 };
 
@@ -956,6 +959,31 @@ const FAILURE_MESSAGE_RULES: ReadonlyArray<{
   pattern: RegExp;
   parameter?: "model" | "tool";
 }> = [
+  // A model call the runtime named by its typed class, before any free text:
+  // `Model call failed (provider.<class>[ <status>])[ for <model>]: …`.
+  // The class decides: a rejection stays a rejection, a route with no model
+  // is unavailable, and everything transport-shaped failed after its retry.
+  {
+    code: "model_rejected",
+    pattern:
+      /^Model call failed \(provider\.(?:auth|quota|content-filter|invalid-request|rate-limit)\b/,
+  },
+  {
+    code: "model_unavailable",
+    pattern: /^Model call failed \(provider\.no-route(?: \d+)?\) for ([^\s:]+)/,
+    parameter: "model",
+  },
+  { code: "model_unavailable", pattern: /^Model call failed \(provider\.no-route\b/ },
+  {
+    code: "model_stream_failed",
+    pattern:
+      /^Model call failed \(provider\.(?:transport|internal|invalid-output|unknown)(?: \d+)?\) for ([^\s:]+)/,
+    parameter: "model",
+  },
+  {
+    code: "model_stream_failed",
+    pattern: /^Model call failed \(provider\.(?:transport|internal|invalid-output|unknown)\b/,
+  },
   {
     code: "model_unavailable",
     pattern: /rejects any useModel other than \S+ \(requested (\S+)\)/,
@@ -1028,7 +1056,10 @@ export function publicFailure(value: unknown): PublicFailure {
       if (model) {
         return {
           code: rule.code,
-          message: `The model ${model} is not available to this agent.`,
+          message:
+            rule.code === "model_stream_failed"
+              ? `The model call to ${model} failed before it finished, and its retry failed too.`
+              : `The model ${model} is not available to this agent.`,
           model,
         };
       }
