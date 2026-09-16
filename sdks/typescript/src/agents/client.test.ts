@@ -291,6 +291,40 @@ describe("OpenComputer client", () => {
     expect(await client.sessions.get("extra")).toEqual({ ...session, nextThing: { added: true } });
   });
 
+  // Application data is the application's. A body whose JSON has a key named
+  // `__proto__` is valid JSON, and parsing keeps it as an own key; a
+  // validator that rebuilt the object by assignment set the copy's prototype
+  // instead, so the key vanished from the returned value and the copy
+  // inherited whatever the key held. Labels are rebuilt the same way.
+  it("returns application data and labels with every key as it came, a key named __proto__ included, and never sets a prototype", async () => {
+    const body =
+      '{"id":"ses_1","agentId":"worker","deploymentId":"dep_1","status":"idle","source":"api",' +
+      '"labels":{"__proto__":"kept","title":"Fix login"},' +
+      '"turns":[{"id":"turn_1","input":"go","mode":"queue","status":"completed",' +
+      '"payload":{"__proto__":{"isAdmin":true},"safe":"ok"},"createdAt":"t","updatedAt":"t"}],' +
+      '"result":{"turnId":"turn_1","callId":"call_1","reportedAt":"t",' +
+      '"data":{"__proto__":{"isAdmin":true},"nested":[{"__proto__":1}]}},' +
+      '"createdAt":"t","updatedAt":"t"}';
+    const api = fakeApi({
+      "GET /api/managed-agents/sessions/ses_1": () =>
+        new Response(body, { status: 200, headers: { "content-type": "application/json" } }),
+    });
+    const session = await oc(api).sessions.get("ses_1");
+    const payload = session.turns[0]!.payload as Record<string, unknown>;
+    expect(JSON.stringify(payload)).toBe('{"__proto__":{"isAdmin":true},"safe":"ok"}');
+    expect(Object.hasOwn(payload, "__proto__")).toBe(true);
+    expect(Object.getPrototypeOf(payload)).toBe(Object.prototype);
+    expect(payload.isAdmin).toBeUndefined();
+    const data = session.result!.data as Record<string, unknown>;
+    expect(JSON.stringify(data)).toBe('{"__proto__":{"isAdmin":true},"nested":[{"__proto__":1}]}');
+    expect(Object.getPrototypeOf(data)).toBe(Object.prototype);
+    expect(data.isAdmin).toBeUndefined();
+    expect(JSON.stringify(session.labels)).toBe('{"__proto__":"kept","title":"Fix login"}');
+    expect(Object.getPrototypeOf(session.labels)).toBe(Object.prototype);
+    // Nothing else moved either: the session serializes back to the body it came from.
+    expect(JSON.stringify(session)).toBe(body);
+  });
+
   // The API answers a repeated key with the turn's persisted status. A
   // retry of a turn that has since completed, failed or been cancelled must
   // say so; a receipt that read "queued" for a completed turn was the

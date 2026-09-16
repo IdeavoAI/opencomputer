@@ -121,13 +121,15 @@ export const anyRecord: Shape<Record<string, unknown>> = (value, path) => {
   return value;
 };
 
-/** An object whose values all match `item`, keyed by strings. */
+/**
+ * An object whose values all match `item`, keyed by strings. Built from its
+ * entries, never by assignment: a key named `__proto__` is a key of the body,
+ * and assigning it would set the copy's prototype and drop the key instead.
+ */
 export function record<T>(item: Shape<T>): Shape<Record<string, T>> {
   return (value, path) => {
     if (!isRecord(value)) throw new ShapeError(path, "an object");
-    const result: Record<string, T> = {};
-    for (const [key, entry] of Object.entries(value)) result[key] = item(entry, at(path, key));
-    return result;
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, item(entry, at(path, key))]));
   };
 }
 
@@ -151,21 +153,33 @@ export function object<F extends Fields>(fields: F): Shape<Inferred<F>> {
   };
 }
 
-/** A JSON value: strings, numbers, booleans, null, arrays and objects of the same. Application data is checked as this and nothing more. */
+/**
+ * A JSON value: strings, numbers, booleans, null, arrays and objects of the
+ * same. Application data is checked as this and nothing more, and returned
+ * as it came: nothing is rebuilt, so every key stays a key (one named
+ * `__proto__` included) and an object keeps the prototype parsing gave it.
+ */
 export const jsonValue: Shape<DataValue> = (value, path) => {
-  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+  checkJsonValue(value, path);
+  return value as DataValue;
+};
+
+function checkJsonValue(value: unknown, path: string): void {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return;
   if (typeof value === "number") {
     if (!Number.isFinite(value)) throw new ShapeError(path, "a JSON value");
-    return value;
+    return;
   }
-  if (Array.isArray(value)) return value.map((entry, index) => jsonValue(entry, at(path, index)));
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) => checkJsonValue(entry, at(path, index)));
+    return;
+  }
   if (isRecord(value)) {
-    const result: Record<string, DataValue> = {};
-    for (const [key, entry] of Object.entries(value)) result[key] = jsonValue(entry, at(path, key));
-    return result;
+    for (const [key, entry] of Object.entries(value)) checkJsonValue(entry, at(path, key));
+    return;
   }
   throw new ShapeError(path, "a JSON value");
-};
+}
 
 /** A `204` or an empty body. */
 export const none: Shape<void> = (value, path) => {
