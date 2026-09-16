@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import {
   mkdir,
   mkdtemp,
@@ -16,6 +17,7 @@ import {
   buildAgentArtifact,
   findAgentRoot,
   initializeAgentProject,
+  agentRuntimeDirectory,
   prepareAgent,
   readProjectResources,
 } from "./project.js";
@@ -526,7 +528,7 @@ export default function Agent() {
     // exactly how this shipped broken the first time. A syntax error here is
     // invisible to tsc and only shows up at build or import.
     const runtime = await import(
-      `${pathToFileURL(resolve(initialized.agentRoot, ".opencomputer", "runtime", "opencomputer-agent.js")).href}?test=${crypto.randomUUID()}`
+      `${pathToFileURL(resolve(await agentRuntimeDirectory(initialized.agentRoot), "opencomputer-agent.js")).href}?test=${crypto.randomUUID()}`
     );
     assert.equal(typeof runtime.callService, "function");
 
@@ -783,7 +785,7 @@ export default function Agent() {
     const built = await buildAgentArtifact(initialized.agentRoot);
     await assert.doesNotReject(
       import(
-        `${pathToFileURL(resolve(initialized.agentRoot, ".opencomputer", "runtime", "opencomputer-agent.js")).href}?test=${crypto.randomUUID()}`
+        `${pathToFileURL(resolve(await agentRuntimeDirectory(initialized.agentRoot), "opencomputer-agent.js")).href}?test=${crypto.randomUUID()}`
       ),
     );
     assert.deepEqual(built.httpConnections, [
@@ -868,7 +870,7 @@ export default function Agent() {
     ]);
     const manifest = JSON.parse(
       await readFile(
-        resolve(initialized.agentRoot, ".opencomputer", "runtime", ".opencomputer", "reactive.json"),
+        resolve(await agentRuntimeDirectory(initialized.agentRoot), ".opencomputer", "reactive.json"),
         "utf8",
       ),
     ) as { githubConnections: unknown[] };
@@ -1528,7 +1530,7 @@ test("the compiler reads the result tool's output schema from a const in the mod
   };
   const manifestOf = async (agentRoot: string) =>
     JSON.parse(
-      await readFile(resolve(agentRoot, ".opencomputer", "runtime", ".opencomputer", "reactive.json"), "utf8"),
+      await readFile(resolve(await agentRuntimeDirectory(agentRoot), ".opencomputer", "reactive.json"), "utf8"),
     ) as { resultTool?: { id: string; output: Record<string, unknown> } };
   try {
     const initialized = await initializeAgentProject(root);
@@ -1681,7 +1683,7 @@ export default function Agent() {
     assert.ok(artifact.files.some((file) => file.path === "agent.js"));
     assert.ok(built.connections.includes("fixture-github"));
     const packaged = await import(
-      `${pathToFileURL(resolve(initialized.agentRoot, ".opencomputer", "runtime", "agent.js")).href}?test=${crypto.randomUUID()}`
+      `${pathToFileURL(resolve(await agentRuntimeDirectory(initialized.agentRoot), "agent.js")).href}?test=${crypto.randomUUID()}`
     ) as { default(): string };
     assert.equal(
       packaged.default(),
@@ -1936,7 +1938,7 @@ export default function Agent() {
     const built = await buildAgentArtifact(initialized.agentRoot);
     assert.deepEqual(built.memory, [KNOWLEDGE_DECLARATION, REQUIREMENTS_DECLARATION]);
     assert.ok(built.connections.includes("memory-service"));
-    const runtime = resolve(initialized.agentRoot, ".opencomputer", "runtime");
+    const runtime = await agentRuntimeDirectory(initialized.agentRoot);
     const manifest = JSON.parse(
       await readFile(resolve(runtime, ".opencomputer", "reactive.json"), "utf8"),
     ) as { memory: unknown; tools: string[] };
@@ -2440,7 +2442,7 @@ export default function Agent() {
 `,
     );
     const built = await buildAgentArtifact(initialized.agentRoot);
-    const runtime = resolve(initialized.agentRoot, ".opencomputer", "runtime");
+    const runtime = await agentRuntimeDirectory(initialized.agentRoot);
     const module = (await import(
       `${pathToFileURL(resolve(runtime, "agent.js")).href}?test=${crypto.randomUUID()}`
     )) as Record<string, { kind: string; version: number; id: string; description: string; provider: unknown }>;
@@ -2522,4 +2524,20 @@ test("the CLI's memory contract is the agent package's module", async () => {
     await readFile(packageModule, "utf8"),
     "cli/src/memory.ts must stay byte-identical to agent/src/memory.ts; the compiler, the runtime shim and @opencomputer/agent share it",
   );
+});
+
+test("prepareAgent builds into a cache under node_modules, never into the agent's source directory", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "opencomputer-runtime-"));
+  try {
+    const initialized = await initializeAgentProject(root);
+    const runtime = await prepareAgent(initialized.agentRoot);
+    assert.equal(
+      runtime,
+      resolve(root, "node_modules", ".cache", "opencomputer", "agents", "hello-world", "runtime"),
+    );
+    assert.equal(existsSync(resolve(initialized.agentRoot, ".opencomputer")), false);
+    assert.equal(existsSync(resolve(runtime, "AGENTS.md")), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
