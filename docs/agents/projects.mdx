@@ -33,7 +33,9 @@ my-agent/
 - `opencomputer/channels/` and `opencomputer/outboxes/` define shared project
   resources; registrations under an agent authorize that agent to use them.
 - `opencomputer/.env.local` optionally holds ignored development secrets.
-- `.opencomputer/` is ignored local state created by the CLI.
+- `.opencomputer/project.json` records the linked cloud project; the CLI's
+  build output is cached under `node_modules/.cache/opencomputer/` and never
+  lands in `opencomputer/`.
 
 Add source files only when the project uses them. The starter does not generate
 placeholder capability directories.

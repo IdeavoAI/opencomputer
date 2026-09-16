@@ -17,6 +17,7 @@ import {
   runDeploymentWatch,
 } from "./dev.js";
 import {
+  describeResolution,
   ensureProjectBinding,
   findOpenComputerProjectRoot,
 } from "./binding.js";
@@ -195,6 +196,17 @@ function printDoctor(result: DoctorResult, json: boolean): void {
     process.stdout.write(
       `${item.severity.toUpperCase()} ${item.code} ${item.file}${item.line ? `:${item.line}` : ""}\n` +
         `  ${item.message}\n  fix: ${item.hint}\n`,
+    );
+  }
+  const { project, agents } = result.resolution;
+  process.stdout.write(
+    project
+      ? `Project: ${project.name} (${project.id}) at ${project.apiUrl}\n`
+      : "Project: not linked. Run `opencomputer link --project <id|slug>` or `opencomputer link --create-project <name>`.\n",
+  );
+  for (const agent of agents) {
+    process.stdout.write(
+      `Agent:   ${agent.localId}${agent.agentId ? ` -> ${agent.agentId}` : ""}\n`,
     );
   }
   process.stdout.write(
@@ -1149,6 +1161,13 @@ export async function runCommand(
     }
     const alias = deploymentAlias(requestedAlias);
     const binding = await ensureProjectBinding(client, config, root);
+    process.stderr.write(
+      describeResolution({
+        binding,
+        localIds: diagnosis.resolution.agents.map((agent) => agent.localId),
+        alias,
+      }),
+    );
     const results = await publishProjectDeployment(
       client,
       root,

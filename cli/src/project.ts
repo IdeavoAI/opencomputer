@@ -3396,8 +3396,39 @@ function compiledModulePath(path: string): string {
   return path === "agent.ts" ? "agent.js" : path.replace(/\.[^.]+$/, ".js");
 }
 
+/**
+ * Where an agent's compiled bundle goes: a cache under the app's
+ * `node_modules`, never inside the agent's source directory, so the source
+ * tree holds only what the user wrote and `doctor` never rescans a build.
+ * An agent outside an app (no `opencomputer/project.ts` above it) caches
+ * under its own directory.
+ */
+export async function agentRuntimeDirectory(agentRoot: string): Promise<string> {
+  const root = resolve(agentRoot);
+  let directory = root;
+  let projectRoot: string | undefined;
+  for (;;) {
+    if (await exists(resolve(directory, "opencomputer", "project.ts"))) {
+      projectRoot = directory;
+      break;
+    }
+    const parent = dirname(directory);
+    if (parent === directory) break;
+    directory = parent;
+  }
+  return resolve(
+    projectRoot ?? root,
+    "node_modules",
+    ".cache",
+    "opencomputer",
+    "agents",
+    basename(root),
+    "runtime",
+  );
+}
+
 export async function prepareAgent(root: string): Promise<string> {
-  const runtime = resolve(root, ".opencomputer", "runtime");
+  const runtime = await agentRuntimeDirectory(root);
   await rm(runtime, { recursive: true, force: true });
   await mkdir(runtime, { recursive: true });
   const agentSource = await readFile(resolve(root, "agent.ts"), "utf8");
