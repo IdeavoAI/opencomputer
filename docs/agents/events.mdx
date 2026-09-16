@@ -83,12 +83,15 @@ A failure's `data` is a stable `code`, a fixed `message` for that code, and
 at most one parameter. The runtime's own error text is never sent; a failure
 no rule recognizes is `agent_failed`.
 
-A model call that fails or whose response stream breaks is retried once
-inside the turn before the turn fails; the retry appears in the log as a
-`runtime.log` milestone with `phase: "model_retry"`, the attempt and the
-failure's class (for example `provider.transport`), never the provider's
-own text. A rejection is not retried: credentials, quota, content policy
-and an invalid request are `model_rejected` at once.
+A model call that fails in flight is retried inside the turn before the
+turn fails: provider errors and rate limits on the runtime's own schedule,
+and a transport failure or a response stream that breaks once more. Each
+retry appears in the log as a `runtime.log` milestone with
+`phase: "model_retry"`, the attempt and the failure's class (for example
+`provider.transport`), never the provider's own text. A rejection is not
+retried: credentials, quota, content policy and an invalid request are
+`model_rejected` at once. A `model_stream_failed` message names its retry
+only when one happened.
 
 | `code` | Meaning | Parameter |
 | --- | --- | --- |
@@ -103,7 +106,7 @@ and an invalid request are `model_rejected` at once.
 | `tool_failed` | A tool failed | `tool`: the tool id, when the runtime named it |
 | `sandbox_timeout` | A sandbox command did not finish in time | |
 | `sandbox_failed` | The sandbox could not run the turn | |
-| `model_stream_failed` | The model call failed before it finished, or its response stream broke, and the retry failed too | `model`: the model id, when known |
+| `model_stream_failed` | The model call failed before it finished, or its response stream broke; when it was retried, the retry failed too | `model`: the model id, when known |
 | `agent_failed` | Any other failure | |
 
 ### Messages

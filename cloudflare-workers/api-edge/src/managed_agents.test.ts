@@ -3470,54 +3470,96 @@ describe("managed agents proxy", () => {
       code: "model_rejected",
       message: "The model provider rejected the request.",
     });
-    // The runtime's typed model-call failures: the class decides, the
-    // provider's own text after the colon is never forwarded.
-    expect(
-      publicFailure({
-        message:
-          "Model call failed (provider.internal 502) for anthropic/claude-sonnet-4.6: upstream socket hang up never-return-this",
-      }),
-    ).toEqual({
+    // The typed fields the runtime records with a provider failure decide
+    // the code; the provider's text is never forwarded.
+    const providerFailure = (
+      subtype: string,
+      extra: Record<string, unknown> = {},
+      attempts = 1,
+    ) => ({
+      message: "upstream said: sk-ant-never x-api-key rejected",
+      failure: {
+        class: "provider",
+        subtype,
+        provider: "openrouter",
+        model: "anthropic/claude-sonnet-4.6",
+        retry: { attempts, hostGranted: attempts > 1 },
+        ...extra,
+      },
+    });
+    expect(publicFailure(providerFailure("transport", {}, 2))).toEqual({
       code: "model_stream_failed",
       message:
-        "The model call to anthropic/claude-sonnet-4.6 failed before it finished, and its retry failed too.",
+        "The model call to anthropic/claude-sonnet-4.6 failed before it finished and its retry failed too.",
+      model: "anthropic/claude-sonnet-4.6",
+    });
+    // A call that bypassed the retry (compaction, titling) failed once: no
+    // retry is claimed.
+    expect(publicFailure(providerFailure("internal", { status: 502 }))).toEqual({
+      code: "model_stream_failed",
+      message:
+        "The model call to anthropic/claude-sonnet-4.6 failed before it finished.",
       model: "anthropic/claude-sonnet-4.6",
     });
     expect(
-      publicFailure({ message: "Model call failed (provider.transport): socket hang up" }),
-    ).toEqual({
-      code: "model_stream_failed",
-      message: "The model call failed before it finished, and its retry failed too.",
-    });
-    expect(
       publicFailure({
-        message: "Model call failed (provider.invalid-output) for anthropic/claude-sonnet-4.6: The provider response ended with an unknown finish reason.",
+        message: "socket hang up",
+        failure: { class: "provider", subtype: "invalid-output", retry: { attempts: 3, hostGranted: false } },
       }),
     ).toEqual({
       code: "model_stream_failed",
+      message: "The model call failed before it finished and its retry failed too.",
+    });
+    // A model id with a variant suffix survives intact.
+    expect(
+      publicFailure(
+        providerFailure("unknown", { model: "meta-llama/llama-3.3-70b-instruct:free" }, 2),
+      ),
+    ).toEqual({
+      code: "model_stream_failed",
       message:
-        "The model call to anthropic/claude-sonnet-4.6 failed before it finished, and its retry failed too.",
-      model: "anthropic/claude-sonnet-4.6",
+        "The model call to meta-llama/llama-3.3-70b-instruct:free failed before it finished and its retry failed too.",
+      model: "meta-llama/llama-3.3-70b-instruct:free",
     });
-    expect(
-      publicFailure({ message: "Model call failed (provider.auth 401) for anthropic/claude-sonnet-4.6: invalid x-api-key sk-ant-never" }),
-    ).toEqual({
+    for (const subtype of ["auth", "quota", "content-filter", "rate-limit"]) {
+      expect(publicFailure(providerFailure(subtype, { status: 429 }))).toEqual({
+        code: "model_rejected",
+        message: "The model provider rejected the request.",
+      });
+    }
+    expect(publicFailure(providerFailure("invalid-request", { status: 400 }))).toEqual({
       code: "model_rejected",
       message: "The model provider rejected the request.",
     });
+    // An invalid request because the conversation outgrew the window.
     expect(
-      publicFailure({ message: "Model call failed (provider.rate-limit 429): rate limited" }),
+      publicFailure({
+        ...providerFailure("invalid-request", { status: 400 }),
+        message: "prompt is too long: 214000 tokens > 200000 maximum context length",
+      }),
     ).toEqual({
-      code: "model_rejected",
-      message: "The model provider rejected the request.",
+      code: "context_too_long",
+      message: "The conversation is too long for the model's context window.",
     });
-    expect(
-      publicFailure({ message: "Model call failed (provider.no-route) for openai/gpt-5: no route" }),
-    ).toEqual({
+    expect(publicFailure(providerFailure("no-route", { model: "openai/gpt-5" }))).toEqual({
       code: "model_unavailable",
       message: "The model openai/gpt-5 is not available to this agent.",
       model: "openai/gpt-5",
     });
+    // A credential-shaped model id is dropped, never echoed.
+    expect(
+      publicFailure(providerFailure("transport", { model: "sk-ant-api03-0123456789abcdefghijklmnop" }, 2)),
+    ).toEqual({
+      code: "model_stream_failed",
+      message: "The model call failed before it finished and its retry failed too.",
+    });
+    // Fields of another class fall through to the text rules.
+    expect(
+      publicFailure({
+        message: "Sandbox operation timed out",
+        failure: { class: "tool", subtype: "execution", retry: { attempts: 1, hostGranted: false } },
+      }),
+    ).toEqual({ code: "sandbox_timeout", message: "A sandbox command did not finish in time." });
     expect(
       publicFailure({
         message: "prompt is too long: 214000 tokens > 200000 maximum context length",
