@@ -829,4 +829,51 @@ describe('ManagedProjectSlack', () => {
       .map((mutation) => JSON.stringify(mutation.state))
     expect(states.join('\n')).not.toContain('xoxe.xoxp-secret-token')
   })
+
+  it('shows the cancellation message on a cancelled setup and offers a fresh start', async () => {
+    api.findManagedSlackSetup.mockResolvedValue(
+      setup({
+        phase: 'app_created',
+        app: { id: 'A1', name: 'Patch' },
+        actions: ['authorize', 'cancel'],
+      }),
+    )
+    const message =
+      "This Slack setup was cancelled. The Slack app may still appear in your workspace's app list and can be removed there."
+    api.cancelManagedSlackSetup.mockResolvedValue(
+      setup({
+        phase: 'cancelled',
+        app: { id: 'A1', name: 'Patch' },
+        actions: [],
+        error: {
+          code: 'slack_setup_cancelled',
+          message,
+          recoverable: false,
+          at: '2026-09-18T08:00:00.000Z',
+        },
+      }),
+    )
+    render()
+    await settle(() => buttons(container).includes('Cancel setup'), 'resume')
+    act(() => button(container, 'Cancel setup').click())
+    await settle(
+      () => document.body.querySelector('[role="alertdialog"]') !== null,
+      'the confirmation',
+    )
+    act(() =>
+      button(
+        document.body.querySelector('[role="alertdialog"]') as HTMLElement,
+        'Cancel setup',
+      ).click(),
+    )
+    await settle(
+      () => text().includes('Setup cancelled'),
+      'the cancelled state',
+    )
+    expect(api.cancelManagedSlackSetup).toHaveBeenCalledWith('setup_1')
+    expect(text()).toContain(message)
+    expect(buttons(container)).toContain('Create Slack bot')
+    expect(buttons(container)).not.toContain('Authorize in Slack')
+    expect(buttons(container)).not.toContain('Cancel setup')
+  })
 })

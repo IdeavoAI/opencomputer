@@ -359,6 +359,29 @@ describe('setup copy', () => {
     ).toBeUndefined()
   })
 
+  it('shows the platform message on a cancelled setup and offers a fresh start', () => {
+    const message =
+      "This Slack setup was cancelled. The Slack app may still appear in your workspace's app list and can be removed there."
+    expect(
+      describeSlackSetup(
+        setup({
+          phase: 'cancelled',
+          actions: [],
+          error: {
+            code: 'slack_setup_cancelled',
+            message,
+            recoverable: false,
+            at: '2026-09-18T08:00:00.000Z',
+          },
+        }),
+      ),
+    ).toMatchObject({
+      title: 'Setup cancelled',
+      description: message,
+      primary: { action: 'create', label: 'Create Slack bot' },
+    })
+  })
+
   it('separates connected credentials from the first received message', () => {
     expect(describeSlackVerification(connection(), 'Patch').state).toBe(
       'waiting',

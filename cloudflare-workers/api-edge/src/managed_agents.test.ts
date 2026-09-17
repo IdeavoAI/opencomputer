@@ -1576,6 +1576,8 @@ describe("managed agents proxy", () => {
       "slack_exchange_failed",
       "slack_setup_not_authorizable",
       "slack_setup_connected",
+      "slack_setup_busy",
+      "slack_setup_cancelled",
     ];
     const GENERIC_MESSAGES = [
       "The agent request could not be completed.",
@@ -1895,6 +1897,77 @@ describe("managed agents proxy", () => {
           message:
             "A Slack setup is already in progress for this agent and environment. Resume it instead of starting another.",
           setupId: "setup_9",
+        },
+      });
+    });
+
+    it("curates a busy cancel and a cancelled record", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          Response.json(
+            { error: { code: "slack_setup_busy", message: "backend text" } },
+            { status: 409 },
+          ),
+        ),
+      );
+      const busy = await proxyManagedAgents(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/channels/slack/setups/setup_1/cancel",
+          { method: "POST" },
+        ),
+        env,
+        caller,
+        "/api/managed-agents",
+      );
+      expect(busy.status).toBe(409);
+      expect(await busy.json()).toEqual({
+        error: {
+          code: "slack_setup_busy",
+          message:
+            "This Slack setup is in progress. Wait for it to finish before cancelling.",
+        },
+      });
+
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          Response.json({
+            setup: {
+              ...backendSetup,
+              phase: "cancelled",
+              actions: [],
+              error: {
+                code: "slack_setup_cancelled",
+                message: "backend text",
+                recoverable: false,
+                at: "2026-09-18T08:00:00.000Z",
+              },
+            },
+          }),
+        ),
+      );
+      const cancelled = await proxyManagedAgents(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/channels/slack/setups/setup_1/cancel",
+          { method: "POST" },
+        ),
+        env,
+        caller,
+        "/api/managed-agents",
+      );
+      expect(await cancelled.json()).toEqual({
+        setup: {
+          ...publicSetup,
+          phase: "cancelled",
+          actions: [],
+          error: {
+            code: "slack_setup_cancelled",
+            message:
+              "This Slack setup was cancelled. The Slack app may still appear in your workspace's app list and can be removed there.",
+            recoverable: false,
+            at: "2026-09-18T08:00:00.000Z",
+          },
         },
       });
     });

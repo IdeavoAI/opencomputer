@@ -392,17 +392,15 @@ function SlackAutomaticSetup({
   }
   const cancel = useMutation({
     mutationFn: (setupId: string) => cancelManagedSlackSetup(setupId),
-    onSuccess: () => {
+    onSuccess: (cancelled) => {
       setConfirmCancel(false)
-      queryClient.setQueryData(queryKey, null)
-      void queryClient.invalidateQueries({ queryKey })
+      // The cancelled record stays on screen with the platform's message
+      // until the next lookup, which answers only non-cancelled setups.
+      queryClient.setQueryData(queryKey, cancelled)
       void queryClient.invalidateQueries({
         queryKey: ['managed-agent-channels'],
       })
-      notifySuccess(
-        'Slack setup cancelled.',
-        'If Slack already created the app, it is still in your Slack app list.',
-      )
+      notifySuccess('Slack setup cancelled.', cancelled.error?.message)
     },
     onError: (error) => notifyError("Couldn't cancel the Slack setup.", error),
   })
@@ -465,7 +463,10 @@ function SlackAutomaticSetup({
   }
 
   const view = describeSlackSetup(setup)
-  const actions = setup?.actions ?? ['create']
+  // A cancelled record is shown for its message only; a new setup starts
+  // fresh, with its own request key.
+  const resumable = setup && setup.phase !== 'cancelled' ? setup : undefined
+  const actions = resumable?.actions ?? ['create']
   const busy = view.tone === 'pending' || setupQuery.isLoading
   const showCreate =
     view.primary?.action === 'create' && actions.includes('create')
@@ -524,11 +525,11 @@ function SlackAutomaticSetup({
               {view.primary!.label}
             </Button>
           ) : null}
-          {showAuthorize && setup ? (
+          {showAuthorize && resumable ? (
             <Button
               size="sm"
               disabled={authorize.isPending}
-              onClick={() => startAuthorization(setup.id)}
+              onClick={() => startAuthorization(resumable.id)}
             >
               {authorize.isPending ? (
                 <Loader2 className="animate-spin" />
@@ -543,7 +544,7 @@ function SlackAutomaticSetup({
               </a>
             </Button>
           ) : null}
-          {setup && actions.includes('cancel') ? (
+          {resumable && actions.includes('cancel') ? (
             <Button
               size="sm"
               variant="ghost"
@@ -558,8 +559,8 @@ function SlackAutomaticSetup({
       {dialogOpen ? (
         <SlackSetupDialog
           target={target}
-          setup={setup ?? undefined}
-          defaultName={setup?.name ?? agentName}
+          setup={resumable}
+          defaultName={resumable?.name ?? agentName}
           slotLabel={
             slot.dedicated
               ? `${agentName} · ${environment}`
@@ -578,7 +579,7 @@ function SlackAutomaticSetup({
         cancelLabel="Keep"
         destructive
         pending={cancel.isPending}
-        onConfirm={() => setup && cancel.mutate(setup.id)}
+        onConfirm={() => resumable && cancel.mutate(resumable.id)}
       />
     </div>
   )

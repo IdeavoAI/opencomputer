@@ -546,6 +546,8 @@ Error codes, as HTTP errors or as `error.code` on the setup:
 | `slack_setup_not_found` | `404`: no setup with that id in this project |
 | `slack_setup_not_authorizable` | `409` on authorize: the setup's phase does not allow it; read the setup for its next step |
 | `slack_setup_connected` | `409` on cancel: the setup is connected; disconnect the connection instead |
+| `slack_setup_busy` | `409` on cancel: the setup is creating or exchanging; wait for it to finish |
+| `slack_setup_cancelled` | Recorded on a setup cancelled after the app was created or its creation was uncertain: the Slack app may still appear in the workspace's app list and can be removed there |
 | `slack_configuration_token_invalid`, `slack_configuration_token_expired` | The token was rejected; generate a new one and submit it with the same key |
 | `slack_manifest_rejected` | Slack rejected the generated app configuration; `pointer` names the field |
 | `slack_app_limit_reached` | The workspace cannot hold another app |

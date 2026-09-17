@@ -157,6 +157,10 @@ const SLACK_SETUP_ERROR_MESSAGES: Record<string, string> = {
     "This setup cannot be authorized in its current state. Reload to see its next step.",
   slack_setup_connected:
     "This setup is already connected and cannot be cancelled. Disconnect the Slack connection instead.",
+  slack_setup_busy:
+    "This Slack setup is in progress. Wait for it to finish before cancelling.",
+  slack_setup_cancelled:
+    "This Slack setup was cancelled. The Slack app may still appear in your workspace's app list and can be removed there.",
   slack_authorization_denied:
     "The Slack installation was declined. Authorize the app again when you are ready.",
   slack_authorization_expired:

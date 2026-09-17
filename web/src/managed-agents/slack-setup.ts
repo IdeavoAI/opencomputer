@@ -161,7 +161,19 @@ function retryAfter(ms?: number) {
 export function describeSlackSetup(
   setup: ManagedSlackSetup | null | undefined,
 ): SlackSetupView {
-  if (!setup || setup.phase === 'cancelled') {
+  if (setup?.phase === 'cancelled') {
+    // The record carries what a cancellation leaves behind: possibly an app
+    // in the workspace's app list, which the platform never deletes.
+    return {
+      title: 'Setup cancelled',
+      description:
+        setup.error?.message ??
+        "The Slack app may still appear in your workspace's app list and can be removed there.",
+      tone: 'idle',
+      primary: { action: 'create', label: 'Create Slack bot' },
+    }
+  }
+  if (!setup) {
     return {
       title: 'Not connected',
       description:
