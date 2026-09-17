@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Check,
@@ -139,6 +139,8 @@ export function ManagedSlackWizard({
   connection,
   channelId,
   destinations = [],
+  consumers,
+  setup,
 }: {
   agentId: string
   alias: string
@@ -147,6 +149,14 @@ export function ManagedSlackWizard({
   connection?: ManagedAgentChannel
   channelId?: string
   destinations?: string[]
+  /** Who receives this channel's messages, as a sentence. */
+  consumers?: string
+  /**
+   * Automatic setup rendered under the header (Project Connections). When
+   * present this wizard is the "Set up manually" fallback; `beginManual`
+   * opens it, for the case where the automatic path can only hand over.
+   */
+  setup?: (controls: { beginManual: () => void }) => ReactNode
 }) {
   const queryClient = useQueryClient()
   const [open, setOpen] = useState(false)
@@ -283,6 +293,11 @@ export function ManagedSlackWizard({
                 ? `Slack · ${connection.teamName || 'Connected workspace'}`
                 : `Connect a dedicated Slack app to @${alias}`}
             </p>
+            {consumers ? (
+              <p className="text-muted-foreground mt-1 truncate text-xs">
+                {consumers}
+              </p>
+            ) : null}
             {destinations.length ? (
               <p className="text-muted-foreground mt-1 truncate text-xs">
                 Destinations: {destinations.join(', ')}
@@ -319,11 +334,17 @@ export function ManagedSlackWizard({
           {connection?.status !== 'connected' &&
           !connection?.verificationError ? (
             <Button size="sm" variant="outline" onClick={begin}>
-              {connection ? 'Continue setup' : 'Connect Slack'}
+              {setup
+                ? 'Set up manually'
+                : connection
+                  ? 'Continue setup'
+                  : 'Connect Slack'}
             </Button>
           ) : null}
         </div>
       </div>
+
+      {setup?.({ beginManual: begin })}
 
       {connection?.status === 'connected'
         ? destinations.map((destination) => (

@@ -73,6 +73,7 @@ import {
   sessionsForEnvironment,
 } from './session-history'
 import { ManagedProjectSecrets } from './Secrets'
+import { ManagedProjectSlack } from './Slack'
 import { ManagedSlackWizard } from './SlackWizard'
 import { ManagedTwilioWizard } from './TwilioWizard'
 import { ManagedAgentOutboxes } from './Outboxes'
@@ -1004,7 +1005,9 @@ export default function ManagedAgentDetail({
                 chatId={`${environment}:${playgroundChatId}`}
                 agentId={project ? `${agentId}@${environment}` : agentId}
                 session={
-                  selectedPlaygroundId ? selectedPlaygroundSession.data : undefined
+                  selectedPlaygroundId
+                    ? selectedPlaygroundSession.data
+                    : undefined
                 }
                 events={
                   selectedPlaygroundEvents.data ?? EMPTY_MANAGED_AGENT_EVENTS
@@ -1144,6 +1147,17 @@ export default function ManagedAgentDetail({
                 Messaging channels connected to this deployed agent.
               </PanelDescription>
             </div>
+            {project ? (
+              // Slack apps are created and installed from Connections; this
+              // tab keeps routing, destinations and delivery.
+              <Button asChild variant="outline" size="sm">
+                <Link
+                  to={`/projects/${encodeURIComponent(project.project.id)}/connections?environment=${environment}`}
+                >
+                  Slack setup in Connections
+                </Link>
+              </Button>
+            ) : null}
           </PanelHeader>
           {agent && activeDeployment.data ? (
             declaredChannels.length ? (
@@ -1260,10 +1274,16 @@ export default function ManagedAgentDetail({
       ) : null}
 
       {activeTab === 'connections' && project ? (
-        <ManagedProjectGitHub
-          projectId={project.project.id}
-          environment={environment}
-        />
+        <div className="space-y-5">
+          <ManagedProjectGitHub
+            projectId={project.project.id}
+            environment={environment}
+          />
+          <ManagedProjectSlack
+            projectId={project.project.id}
+            environment={environment}
+          />
+        </div>
       ) : null}
     </div>
   )

@@ -37,7 +37,25 @@ const deploymentSchema = z.object({
       id: z.string(),
       digest: z.string(),
       localAgentId: z.string(),
+      // Every agent in the project deployment, by its local id and the
+      // account-level agent id the dashboard addresses it by.
+      agents: z
+        .array(z.object({ localId: z.string(), agentId: z.string() }))
+        .optional()
+        .default([]),
       resources: z.object({
+        // Which agents opted into a channel's events; Project Connections
+        // lists them as the channel's consumers before a connection exists.
+        channelRegistrations: z
+          .array(
+            z.object({
+              agentId: z.string(),
+              channelId: z.string(),
+              triggers: z.array(z.string()).optional().default([]),
+            }),
+          )
+          .optional()
+          .default([]),
         channels: z.array(
           z.object({
             id: z.string(),
@@ -308,6 +326,7 @@ const channelSchema = z.object({
   botUserId: z.string().nullish(),
   verifiedAt: z.string().nullish(),
   verificationError: z.enum(['signing_secret_mismatch']).nullish(),
+  lastEventAt: z.string().nullish(),
   status: z.string(),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -322,6 +341,63 @@ const channelSchema = z.object({
     )
     .optional()
     .default([]),
+  // The agents whose registrations consume this channel in its environment.
+  agents: z.array(z.string()).optional().default([]),
+})
+
+// Automated Slack setup (docs/agents/channels.mdx "Connect Slack"). The record
+// is redacted by the platform: it never carries the configuration token or
+// the generated app credentials, so nothing here needs to stay out of the
+// query cache.
+export const SLACK_SETUP_PHASES = [
+  'prepared',
+  'creating',
+  'creation_uncertain',
+  'app_created',
+  'exchanging',
+  'connected',
+  'cancelled',
+] as const
+export const SLACK_SETUP_ACTIONS = [
+  'create',
+  'authorize',
+  'manual',
+  'cancel',
+] as const
+
+const slackSetupSchema = z.object({
+  id: z.string(),
+  requestKey: z.string(),
+  projectId: z.string(),
+  agentId: z.string(),
+  alias: z.enum(['development', 'production']),
+  channelId: z.string(),
+  name: z.string(),
+  connectionId: z.string(),
+  phase: z.enum(SLACK_SETUP_PHASES),
+  app: z.object({ id: z.string(), name: z.string() }).optional(),
+  workspace: z.object({ id: z.string(), name: z.string() }).optional(),
+  botUserId: z.string().optional(),
+  error: z
+    .object({
+      code: z.string(),
+      message: z.string(),
+      recoverable: z.boolean(),
+      retryAfterMs: z.number().optional(),
+      pointer: z.string().optional(),
+      at: z.string(),
+    })
+    .optional(),
+  actions: z.array(z.enum(SLACK_SETUP_ACTIONS)),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+})
+
+const slackSetupResponseSchema = z.object({ setup: slackSetupSchema })
+const slackSetupLookupSchema = z.object({ setup: slackSetupSchema.nullable() })
+const slackSetupAuthorizationSchema = z.object({
+  authorizationUrl: z.string().url(),
+  expiresAt: z.string(),
 })
 
 const connectionsResponseSchema = z.object({
@@ -704,6 +780,9 @@ export type ManagedAgentSchedule = z.infer<typeof scheduleSchema>
 export type ManagedAgentScheduleRun = z.infer<typeof scheduleRunSchema>
 export type ManagedAgentWebhook = z.infer<typeof webhookSchema>
 export type ManagedSlackManifest = z.infer<typeof slackManifestResponseSchema>
+export type ManagedSlackSetup = z.infer<typeof slackSetupSchema>
+export type ManagedSlackSetupPhase = ManagedSlackSetup['phase']
+export type ManagedSlackSetupAction = ManagedSlackSetup['actions'][number]
 export type ManagedProjectSecret = z.infer<typeof secretSchema>
 export type ManagedModelAccessConnection = z.infer<
   typeof modelAccessConnectionSchema
@@ -1287,6 +1366,79 @@ export async function completeManagedAgentSlack(
     { method: 'PUT', body: JSON.stringify(input) },
     channelSchema,
   )
+}
+
+export type ManagedSlackSetupTarget = {
+  agentId: string
+  alias: 'development' | 'production'
+  channelId?: string
+}
+
+/**
+ * Start automated Slack setup, or continue the one this request key already
+ * names. The same key with the same target and name returns the same record;
+ * with a configuration token it also submits the app to Slack. The token is
+ * request material: the platform uses it once and never stores it.
+ */
+export async function startManagedSlackSetup(
+  input: ManagedSlackSetupTarget & {
+    name: string
+    requestKey: string
+    configurationToken?: string
+  },
+) {
+  return (
+    await apiFetch(
+      '/managed-agents/channels/slack/setups',
+      { method: 'POST', body: JSON.stringify(input) },
+      slackSetupResponseSchema,
+    )
+  ).setup
+}
+
+/** The latest resumable setup for a target, so a reloaded page finds it. */
+export async function findManagedSlackSetup(target: ManagedSlackSetupTarget) {
+  const query = new URLSearchParams({
+    agentId: target.agentId,
+    alias: target.alias,
+    ...(target.channelId ? { channelId: target.channelId } : {}),
+  })
+  return (
+    await apiFetch(
+      `/managed-agents/channels/slack/setups?${query.toString()}`,
+      undefined,
+      slackSetupLookupSchema,
+    )
+  ).setup
+}
+
+export async function getManagedSlackSetup(setupId: string) {
+  return (
+    await apiFetch(
+      `/managed-agents/channels/slack/setups/${encodeURIComponent(setupId)}`,
+      undefined,
+      slackSetupResponseSchema,
+    )
+  ).setup
+}
+
+/** A fresh authorization URL for the persisted app; earlier ones stop working. */
+export async function authorizeManagedSlackSetup(setupId: string) {
+  return apiFetch(
+    `/managed-agents/channels/slack/setups/${encodeURIComponent(setupId)}/authorize`,
+    { method: 'POST' },
+    slackSetupAuthorizationSchema,
+  )
+}
+
+export async function cancelManagedSlackSetup(setupId: string) {
+  return (
+    await apiFetch(
+      `/managed-agents/channels/slack/setups/${encodeURIComponent(setupId)}/cancel`,
+      { method: 'POST' },
+      slackSetupResponseSchema,
+    )
+  ).setup
 }
 
 const twilioNumberSchema = z.object({
