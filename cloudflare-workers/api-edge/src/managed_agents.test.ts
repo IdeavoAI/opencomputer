@@ -4,6 +4,7 @@ import {
   handleAgentWebhookInvocation,
   handleManagedAgentChannelConnection,
   handleManagedGitHubCallback,
+  handleManagedSlackCallback,
   hasBYOKPlanAccess,
   mintManagedAgentsAssertion,
   proxyManagedAgents,
@@ -1489,6 +1490,370 @@ describe("managed agents proxy", () => {
         message:
           "Slack could not find that conversation. Check its ID and invite the app first.",
       },
+    });
+  });
+
+  describe("automated Slack setup", () => {
+    const env = {
+      OC_MANAGED_AGENTS_SECRET: "test-secret",
+      MANAGED_AGENTS_API_URL: "https://managedagents.test",
+    };
+    const caller = { orgID: "org_test", userID: "user_test" };
+    // What the backend row carries beyond the public record: generated app
+    // credentials, the manifest snapshot and the webhook identity.
+    const backendSetup = {
+      id: "setup_1",
+      requestKey: "req_0123456789abcdef",
+      projectId: "prj_test",
+      ownerUserId: "user_private",
+      agentId: "coder",
+      alias: "development",
+      channelId: "slack",
+      connectionId: "channel_slack",
+      webhookTokenHash: "private",
+      name: "Patch",
+      manifest: { display_information: { name: "Patch" } },
+      phase: "app_created",
+      attemptId: "attempt_private",
+      app: { id: "A0APP", name: "Patch", clientId: "private" },
+      clientSecret: "private",
+      signingSecret: "private",
+      configurationToken: "xoxe-private",
+      error: {
+        code: "slack_authorization_denied",
+        message: "The installation was declined.",
+        recoverable: true,
+        at: "2026-09-17T10:05:00.000Z",
+        provider: { body: "private" },
+      },
+      actions: ["authorize", "cancel", "delete_app"],
+      createdAt: "2026-09-17T10:00:00.000Z",
+      updatedAt: "2026-09-17T10:05:00.000Z",
+    };
+    const publicSetup = {
+      id: "setup_1",
+      requestKey: "req_0123456789abcdef",
+      projectId: "prj_test",
+      agentId: "coder",
+      alias: "development",
+      channelId: "slack",
+      name: "Patch",
+      connectionId: "channel_slack",
+      phase: "app_created",
+      app: { id: "A0APP", name: "Patch" },
+      error: {
+        code: "slack_authorization_denied",
+        message: "The installation was declined.",
+        recoverable: true,
+        at: "2026-09-17T10:05:00.000Z",
+      },
+      actions: ["authorize", "cancel"],
+      createdAt: "2026-09-17T10:00:00.000Z",
+      updatedAt: "2026-09-17T10:05:00.000Z",
+    };
+
+    it("starts a setup and returns only the redacted record", async () => {
+      const fetchSpy = vi
+        .fn()
+        .mockResolvedValue(
+          Response.json({ setup: backendSetup }, { status: 201 }),
+        );
+      vi.stubGlobal("fetch", fetchSpy);
+
+      const response = await proxyManagedAgents(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/channels/slack/setups",
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              agentId: "coder",
+              alias: "development",
+              channelId: "slack",
+              name: "Patch",
+              requestKey: "req_0123456789abcdef",
+              configurationToken: "xoxe-private",
+            }),
+          },
+        ),
+        env,
+        caller,
+        "/api/managed-agents",
+      );
+
+      expect(response.status).toBe(201);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(await response.json()).toEqual({ setup: publicSetup });
+      expect(fetchSpy.mock.calls[0]?.[0].toString()).toBe(
+        "https://managedagents.test/v1/channels/slack/setups",
+      );
+    });
+
+    it("rediscovers a setup by target and passes the query through", async () => {
+      const fetchSpy = vi.fn().mockResolvedValue(Response.json({ setup: null }));
+      vi.stubGlobal("fetch", fetchSpy);
+
+      const response = await proxyManagedAgents(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/channels/slack/setups?agentId=coder&alias=development&channelId=slack",
+        ),
+        env,
+        caller,
+        "/api/managed-agents",
+      );
+
+      expect(await response.json()).toEqual({ setup: null });
+      expect(fetchSpy.mock.calls[0]?.[0].toString()).toBe(
+        "https://managedagents.test/v1/channels/slack/setups?agentId=coder&alias=development&channelId=slack",
+      );
+    });
+
+    it("reads and cancels a setup through the same whitelist", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          Response.json({ setup: { ...backendSetup, phase: "cancelled" } }),
+        ),
+      );
+
+      const read = await proxyManagedAgents(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/channels/slack/setups/setup_1",
+        ),
+        env,
+        caller,
+        "/api/managed-agents",
+      );
+      const cancelled = await proxyManagedAgents(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/channels/slack/setups/setup_1/cancel",
+          { method: "POST" },
+        ),
+        env,
+        caller,
+        "/api/managed-agents",
+      );
+
+      expect(await read.json()).toEqual({
+        setup: { ...publicSetup, phase: "cancelled" },
+      });
+      expect(await cancelled.json()).toEqual({
+        setup: { ...publicSetup, phase: "cancelled" },
+      });
+    });
+
+    it("returns only the authorization URL when authorizing", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(
+          Response.json({
+            authorizationUrl:
+              "https://slack.com/oauth/v2/authorize?client_id=1&scope=chat:write&state=opaque",
+            expiresAt: "2026-09-17T10:15:00.000Z",
+            state: "private",
+            clientId: "private",
+          }),
+        ),
+      );
+
+      const response = await proxyManagedAgents(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/channels/slack/setups/setup_1/authorize",
+          { method: "POST" },
+        ),
+        env,
+        caller,
+        "/api/managed-agents",
+      );
+
+      expect(await response.json()).toEqual({
+        authorizationUrl:
+          "https://slack.com/oauth/v2/authorize?client_id=1&scope=chat:write&state=opaque",
+        expiresAt: "2026-09-17T10:15:00.000Z",
+      });
+    });
+
+    it("maps setup errors to curated messages", async () => {
+      const cases: Array<[number, string, string]> = [
+        [
+          409,
+          "slack_setup_active",
+          "A Slack setup is already in progress for this agent and environment. Resume it instead of starting another.",
+        ],
+        [
+          409,
+          "slack_already_connected",
+          "Slack is already connected for this agent and environment. Disconnect it before creating another app.",
+        ],
+        [
+          409,
+          "slack_setup_conflict",
+          "This setup request was already used with a different bot name or target. Start a new setup.",
+        ],
+        [
+          503,
+          "slack_setup_unavailable",
+          "Automatic Slack setup is not available right now. Set up the app manually instead.",
+        ],
+        [
+          400,
+          "slack_configuration_token_expired",
+          "The configuration access token has expired. Generate a new one at api.slack.com/apps and try again.",
+        ],
+      ];
+      for (const [status, code, message] of cases) {
+        vi.stubGlobal(
+          "fetch",
+          vi.fn(async () =>
+            Response.json(
+              {
+                error: { code, message: "backend text with xoxe-private" },
+                setup: backendSetup,
+              },
+              { status },
+            ),
+          ),
+        );
+        const response = await proxyManagedAgents(
+          new Request(
+            "https://app.opencomputer.dev/api/managed-agents/channels/slack/setups",
+            {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: "{}",
+            },
+          ),
+          env,
+          caller,
+          "/api/managed-agents",
+        );
+        expect(response.status).toBe(status);
+        expect(await response.json()).toEqual({ error: { code, message } });
+      }
+    });
+
+    it("lists the agents consuming each channel", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(
+          Response.json({
+            connections: [
+              {
+                id: "channel_slack",
+                channelId: "team-slack",
+                agentId: "coder",
+                alias: "development",
+                status: "connected",
+                agents: ["coder", "reviewer", 7],
+                botToken: "secret",
+                createdAt: "2026-09-17T10:00:00.000Z",
+                updatedAt: "2026-09-17T10:05:00.000Z",
+              },
+            ],
+          }),
+        ),
+      );
+
+      const response = await proxyManagedAgents(
+        new Request("https://app.opencomputer.dev/api/managed-agents/channels"),
+        env,
+        caller,
+        "/api/managed-agents",
+      );
+
+      expect(await response.json()).toEqual({
+        channels: [
+          {
+            id: "channel_slack",
+            channel: "slack",
+            channelId: "team-slack",
+            agentId: "coder",
+            alias: "development",
+            status: "connected",
+            agents: ["coder", "reviewer"],
+            createdAt: "2026-09-17T10:00:00.000Z",
+            updatedAt: "2026-09-17T10:05:00.000Z",
+          },
+        ],
+      });
+    });
+
+    it("passes the OAuth callback redirect through with its location", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(
+        new Response(null, {
+          status: 302,
+          headers: {
+            location:
+              "https://app.opencomputer.dev/projects/prj_test/connections?environment=development&slack=connected&setup=setup_1",
+            "set-cookie": "private=1",
+          },
+        }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      const response = await handleManagedSlackCallback(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/slack/callback?code=oauth-code&state=opaque",
+        ),
+        { MANAGED_AGENTS_API_URL: "https://managedagents.test" },
+      );
+
+      expect(response.status).toBe(302);
+      expect(response.headers.get("location")).toBe(
+        "https://app.opencomputer.dev/projects/prj_test/connections?environment=development&slack=connected&setup=setup_1",
+      );
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(response.headers.get("set-cookie")).toBeNull();
+      expect(fetchMock.mock.calls[0]?.[0].toString()).toBe(
+        "https://managedagents.test/v1/channels/slack/oauth/callback?code=oauth-code&state=opaque",
+      );
+      expect(fetchMock.mock.calls[0]?.[1]).toEqual({ redirect: "manual" });
+    });
+
+    it("passes the OAuth callback's error page through without a location", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(
+          new Response("<html>invalid state</html>", {
+            status: 400,
+            headers: {
+              "content-type": "text/html; charset=utf-8",
+              "x-frame-options": "DENY",
+            },
+          }),
+        ),
+      );
+
+      const response = await handleManagedSlackCallback(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/slack/callback?state=broken",
+        ),
+        { MANAGED_AGENTS_API_URL: "https://managedagents.test" },
+      );
+
+      expect(response.status).toBe(400);
+      expect(response.headers.get("location")).toBeNull();
+      expect(response.headers.get("content-type")).toBe(
+        "text/html; charset=utf-8",
+      );
+      expect(response.headers.get("x-frame-options")).toBe("DENY");
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      await expect(response.text()).resolves.toContain("invalid state");
+    });
+
+    it("refuses to forward the OAuth callback over plain HTTP", async () => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+
+      const response = await handleManagedSlackCallback(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/slack/callback?code=oauth-code&state=opaque",
+        ),
+        { MANAGED_AGENTS_API_URL: "http://managedagents.test" },
+      );
+
+      expect(response.status).toBe(503);
+      expect(fetchMock).not.toHaveBeenCalled();
     });
   });
 

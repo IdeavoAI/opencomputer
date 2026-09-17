@@ -122,6 +122,51 @@ function copyRequestHeaders(request: Request): Headers {
   return headers;
 }
 
+// Automated Slack setup (docs/agents/channels.mdx "Connect Slack"). The
+// backend's codes are stable; the messages are written here so a provider
+// phrase never reaches the dashboard.
+const SLACK_SETUP_ERROR_MESSAGES: Record<string, string> = {
+  slack_setup_conflict:
+    "This setup request was already used with a different bot name or target. Start a new setup.",
+  slack_setup_active:
+    "A Slack setup is already in progress for this agent and environment. Resume it instead of starting another.",
+  slack_already_connected:
+    "Slack is already connected for this agent and environment. Disconnect it before creating another app.",
+  slack_setup_unavailable:
+    "Automatic Slack setup is not available right now. Set up the app manually instead.",
+  slack_setup_not_found: "That Slack setup does not exist.",
+  slack_configuration_token_invalid:
+    "Slack rejected the configuration access token. Generate a new token at api.slack.com/apps and try again.",
+  slack_configuration_token_expired:
+    "The configuration access token has expired. Generate a new one at api.slack.com/apps and try again.",
+  slack_manifest_rejected:
+    "Slack rejected the generated app manifest. Check the channel's declared scopes and events.",
+  slack_app_limit_reached:
+    "This Slack workspace has reached its app limit. Remove an unused app in Slack or choose another workspace.",
+  slack_rate_limited:
+    "Slack is rate limiting app creation. Wait a moment and try again.",
+  slack_provider_unavailable:
+    "Slack is temporarily unavailable. Try again shortly.",
+  slack_creation_uncertain:
+    "Slack may have created the app, but the result was lost. Check your Slack app list before creating another.",
+  slack_exchange_uncertain:
+    "The installation could not be confirmed. Authorize the app again.",
+  slack_authorization_denied:
+    "The Slack installation was declined. Authorize the app again when you are ready.",
+  slack_authorization_expired:
+    "The Slack authorization link expired. Authorize the app again.",
+  slack_app_mismatch:
+    "Slack installed a different app than the one created for this agent. Authorize the generated app again.",
+  slack_workspace_mismatch:
+    "The app was installed to a different Slack workspace than the one already connected.",
+  slack_scope_missing:
+    "The installed app is missing a permission the deployment declares. Authorize it again to reinstall with the current manifest.",
+  slack_enterprise_install_unsupported:
+    "Organization-wide Slack installations are not supported. Install the app into a single workspace.",
+  slack_setup_superseded:
+    "Another Slack connection change completed first. Check the current connection.",
+};
+
 async function publicErrorResponse(upstream: Response): Promise<Response> {
   const body: unknown = await upstream.json().catch(() => null);
   const backendError =
@@ -151,7 +196,12 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
     ? "template_manifest_missing"
     : backendCode;
   let message = "The agent request could not be completed.";
-  if (missingTemplateManifest) {
+  const slackSetupMessage = Object.hasOwn(SLACK_SETUP_ERROR_MESSAGES, backendCode)
+    ? SLACK_SETUP_ERROR_MESSAGES[backendCode]
+    : undefined;
+  if (slackSetupMessage) {
+    message = slackSetupMessage;
+  } else if (missingTemplateManifest) {
     message =
       "This is not a valid template: oc-template.toml is missing from the repository root.";
   } else if (upstream.status === 400) {
@@ -530,6 +580,68 @@ function publicChannel(value: unknown): Record<string, unknown> {
     ...(Array.isArray(channel.destinations)
       ? { destinations: channel.destinations.map(stripPrivateValues) }
       : {}),
+    // The agents whose registrations consume this channel in the
+    // connection's environment; what Project Connections lists as consumers.
+    ...(Array.isArray(channel.agents)
+      ? { agents: strings(channel.agents) }
+      : {}),
+  };
+}
+
+const SLACK_SETUP_ACTIONS = new Set(["create", "authorize", "manual", "cancel"]);
+const SLACK_SETUPS_ROUTE = /^\/channels\/slack\/setups$/;
+const SLACK_SETUP_ROUTE = /^\/channels\/slack\/setups\/[^/]+$/;
+const SLACK_SETUP_AUTHORIZE_ROUTE = /^\/channels\/slack\/setups\/[^/]+\/authorize$/;
+const SLACK_SETUP_CANCEL_ROUTE = /^\/channels\/slack\/setups\/[^/]+\/cancel$/;
+
+/**
+ * The automated Slack setup record. Redaction is by whitelist: the backend
+ * row also carries the generated app credentials, the manifest snapshot and
+ * the webhook identity, none of which the dashboard needs to resume.
+ */
+function publicSlackSetup(value: unknown): Record<string, unknown> {
+  const setup = record(value) ?? {};
+  const app = record(setup.app);
+  const workspace = record(setup.workspace);
+  const error = record(setup.error);
+  return {
+    id: setup.id,
+    requestKey: setup.requestKey,
+    projectId: setup.projectId,
+    agentId: setup.agentId,
+    alias: setup.alias,
+    channelId: setup.channelId,
+    name: setup.name,
+    connectionId: setup.connectionId,
+    phase: setup.phase,
+    ...(app ? { app: { id: app.id, name: app.name } } : {}),
+    ...(workspace
+      ? { workspace: { id: workspace.id, name: workspace.name } }
+      : {}),
+    ...(typeof setup.botUserId === "string"
+      ? { botUserId: setup.botUserId }
+      : {}),
+    ...(error
+      ? {
+          error: {
+            code: error.code,
+            message: error.message,
+            recoverable: error.recoverable === true,
+            ...(typeof error.retryAfterMs === "number"
+              ? { retryAfterMs: error.retryAfterMs }
+              : {}),
+            ...(typeof error.pointer === "string"
+              ? { pointer: error.pointer }
+              : {}),
+            at: error.at,
+          },
+        }
+      : {}),
+    actions: strings(setup.actions).filter((action) =>
+      SLACK_SETUP_ACTIONS.has(action),
+    ),
+    createdAt: setup.createdAt,
+    updatedAt: setup.updatedAt,
   };
 }
 
@@ -1498,6 +1610,23 @@ function publicSuccessBody(
     return publicChannel(body);
   }
   if (
+    (method === "POST" && SLACK_SETUPS_ROUTE.test(suffix)) ||
+    (method === "GET" && SLACK_SETUP_ROUTE.test(suffix)) ||
+    (method === "POST" && SLACK_SETUP_CANCEL_ROUTE.test(suffix))
+  ) {
+    return { setup: publicSlackSetup(body.setup) };
+  }
+  if (method === "GET" && SLACK_SETUPS_ROUTE.test(suffix)) {
+    // Lookup by target: the latest resumable setup, or null.
+    return { setup: record(body.setup) ? publicSlackSetup(body.setup) : null };
+  }
+  if (method === "POST" && SLACK_SETUP_AUTHORIZE_ROUTE.test(suffix)) {
+    return {
+      authorizationUrl: body.authorizationUrl,
+      expiresAt: body.expiresAt,
+    };
+  }
+  if (
     (method === "GET" && suffix.startsWith("/connections")) ||
     (method === "POST" && suffix.startsWith("/connections")) ||
     (method === "PUT" && suffix.startsWith("/connections")) ||
@@ -1589,7 +1718,11 @@ async function publicSuccessResponse(
   const headers = new Headers({ "content-type": "application/json" });
   const cacheControl = upstream.headers.get("cache-control");
   if (cacheControl) headers.set("cache-control", cacheControl);
-  if (suffix.includes("/webhooks") || suffix.includes("/event-subscriptions")) {
+  if (
+    suffix.includes("/webhooks") ||
+    suffix.includes("/event-subscriptions") ||
+    suffix.startsWith("/channels/slack/setups")
+  ) {
     headers.set("cache-control", "no-store");
   }
   return new Response(
@@ -1960,6 +2093,62 @@ export async function handleManagedGitHubCallback(
     });
   } catch {
     return new Response("GitHub connection is temporarily unavailable", {
+      status: 502,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  }
+}
+
+/**
+ * Slack's OAuth redirect for apps created by the automated setup. The exact
+ * public URL is registered on every generated app, so it forwards the query
+ * verbatim and never reinterprets it. The backend resolves the single-use
+ * state and answers with a redirect into the project's Connections tab, or
+ * a no-store HTML page for a malformed state; both pass through unchanged.
+ */
+export async function handleManagedSlackCallback(
+  request: Request,
+  env: ManagedAgentsEnv,
+): Promise<Response> {
+  if (request.method !== "GET") {
+    return new Response("Method not allowed", { status: 405 });
+  }
+  const requestURL = new URL(request.url);
+  const base = (
+    env.MANAGED_AGENTS_API_URL ?? DEFAULT_MANAGED_AGENTS_API_URL
+  ).replace(/\/+$/, "");
+  const target = new URL(
+    `${base}/v1/channels/slack/oauth/callback${requestURL.search}`,
+  );
+  if (target.protocol !== "https:" && target.hostname !== "localhost") {
+    return new Response("Slack connection is unavailable", { status: 503 });
+  }
+  try {
+    const upstream = await fetch(target, { redirect: "manual" });
+    const headers = new Headers();
+    for (const name of [
+      "content-type",
+      "cache-control",
+      "content-security-policy",
+      "referrer-policy",
+      "x-content-type-options",
+      "x-frame-options",
+    ]) {
+      const value = upstream.headers.get(name);
+      if (value) headers.set(name, value);
+    }
+    if (upstream.status >= 300 && upstream.status < 400) {
+      const location = upstream.headers.get("location");
+      if (location) headers.set("location", location);
+    }
+    headers.set("cache-control", "no-store");
+    return new Response(upstream.body, {
+      status: upstream.status,
+      statusText: upstream.statusText,
+      headers,
+    });
+  } catch {
+    return new Response("Slack connection is temporarily unavailable", {
       status: 502,
       headers: { "content-type": "text/plain; charset=utf-8" },
     });
