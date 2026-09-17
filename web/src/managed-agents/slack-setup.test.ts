@@ -290,6 +290,24 @@ describe('setup copy', () => {
         setup({
           phase: 'app_created',
           app: { id: 'A1', name: 'Patch' },
+          actions: ['authorize', 'cancel'],
+          error: {
+            code: 'slack_exchange_failed',
+            message: 'exchange failed',
+            recoverable: true,
+            at: '2026-09-17T00:00:00.000Z',
+          },
+        }),
+      ),
+    ).toMatchObject({
+      title: 'Slack did not confirm the installation',
+      primary: { action: 'authorize', label: 'Authorize again' },
+    })
+    expect(
+      describeSlackSetup(
+        setup({
+          phase: 'app_created',
+          app: { id: 'A1', name: 'Patch' },
           actions: ['cancel'],
           error: {
             code: 'slack_setup_superseded',

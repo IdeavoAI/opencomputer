@@ -280,6 +280,14 @@ export function describeSlackSetup(
             tone: 'error',
             primary: authorize,
           }
+        case 'slack_exchange_failed':
+          return {
+            title: 'Slack did not confirm the installation',
+            description:
+              'The installation could not be completed with Slack. Authorize again; the app is kept.',
+            tone: 'error',
+            primary: authorize,
+          }
         case 'slack_exchange_uncertain':
         case 'slack_provider_unavailable':
           return {

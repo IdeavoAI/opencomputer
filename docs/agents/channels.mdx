@@ -143,10 +143,10 @@ OpenComputer asks the user which agent should handle it instead of guessing.
 
 ## Connect Slack
 
-Each environment gets its own dedicated Slack app. OpenComputer creates it
-from the capabilities declared in code and installs it into your workspace;
-you approve the installation in Slack. Nothing about the app is copied by
-hand.
+Each declared channel gets its own Slack app per environment, and so does an
+agent whose deployment declares none. OpenComputer creates the app from the
+capabilities declared in code and installs it into your workspace; you paste
+one short-lived token and approve the installation in Slack.
 
 After the deployment is synchronized:
 

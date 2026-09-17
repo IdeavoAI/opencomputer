@@ -151,6 +151,12 @@ const SLACK_SETUP_ERROR_MESSAGES: Record<string, string> = {
     "Slack may have created the app, but the result was lost. Check your Slack app list before creating another.",
   slack_exchange_uncertain:
     "The installation could not be confirmed. Authorize the app again.",
+  slack_exchange_failed:
+    "Slack did not confirm the installation. Authorize the app again.",
+  slack_setup_not_authorizable:
+    "This setup cannot be authorized in its current state. Reload to see its next step.",
+  slack_setup_connected:
+    "This setup is already connected and cannot be cancelled. Disconnect the Slack connection instead.",
   slack_authorization_denied:
     "The Slack installation was declined. Authorize the app again when you are ready.",
   slack_authorization_expired:
@@ -250,8 +256,16 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
   const headers = new Headers({ "content-type": "application/json" });
   const retryAfter = upstream.headers.get("retry-after");
   if (retryAfter) headers.set("retry-after", retryAfter);
+  // The one extra field an error may carry: the id of the setup already in
+  // progress for the target, so the caller can resume it.
+  const setupId =
+    backendCode === "slack_setup_active" &&
+    typeof backendError?.setupId === "string" &&
+    /^[A-Za-z0-9_-]{1,128}$/.test(backendError.setupId)
+      ? { setupId: backendError.setupId }
+      : {};
   return new Response(
-    JSON.stringify({ error: { code: publicCode, message } }),
+    JSON.stringify({ error: { code: publicCode, message, ...setupId } }),
     { status: upstream.status, headers },
   );
 }
@@ -599,6 +613,17 @@ const SLACK_SETUP_CANCEL_ROUTE = /^\/channels\/slack\/setups\/[^/]+\/cancel$/;
  * row also carries the generated app credentials, the manifest snapshot and
  * the webhook identity, none of which the dashboard needs to resume.
  */
+function isSlackSetupRoute(method: string, suffix: string): boolean {
+  return (
+    ((method === "GET" || method === "POST") &&
+      SLACK_SETUPS_ROUTE.test(suffix)) ||
+    (method === "GET" && SLACK_SETUP_ROUTE.test(suffix)) ||
+    (method === "POST" &&
+      (SLACK_SETUP_AUTHORIZE_ROUTE.test(suffix) ||
+        SLACK_SETUP_CANCEL_ROUTE.test(suffix)))
+  );
+}
+
 function publicSlackSetup(value: unknown): Record<string, unknown> {
   const setup = record(value) ?? {};
   const app = record(setup.app);
@@ -625,7 +650,11 @@ function publicSlackSetup(value: unknown): Record<string, unknown> {
       ? {
           error: {
             code: error.code,
-            message: error.message,
+            message:
+              typeof error.code === "string" &&
+              Object.hasOwn(SLACK_SETUP_ERROR_MESSAGES, error.code)
+                ? SLACK_SETUP_ERROR_MESSAGES[error.code]
+                : "The last Slack setup step did not complete.",
             recoverable: error.recoverable === true,
             ...(typeof error.retryAfterMs === "number"
               ? { retryAfterMs: error.retryAfterMs }
@@ -1626,6 +1655,11 @@ function publicSuccessBody(
       expiresAt: body.expiresAt,
     };
   }
+  if (suffix.startsWith("/channels/slack/setups")) {
+    // Every setup response is shaped explicitly above; nothing under this
+    // prefix may fall through to the generic key filter.
+    throw new Error("Unsupported managed agents response");
+  }
   if (
     (method === "GET" && suffix.startsWith("/connections")) ||
     (method === "POST" && suffix.startsWith("/connections")) ||
@@ -2006,6 +2040,11 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   if (method === "GET" && suffix === "/schedule-runs") return true;
   if (method === "POST" && /^\/schedules\/[^/]+\/run$/.test(suffix))
     return true;
+  // Automated Slack setup: only the contract's routes, before the /channels
+  // catch-all below can admit anything else under the prefix.
+  if (suffix.startsWith("/channels/slack/setups")) {
+    return isSlackSetupRoute(method, suffix);
+  }
   if (
     (method === "GET" &&
       (/^\/connections(?:\/.*)?$/.test(suffix) ||
