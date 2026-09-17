@@ -29,24 +29,8 @@ const api = vi.hoisted(() => ({
 }))
 vi.mock('./api', () => api)
 
-const authorization = vi.hoisted(() => {
-  const window = { close: vi.fn() }
-  return {
-    window,
-    openAuthorizationWindow: vi.fn(() => window),
-    navigateAuthorizationWindow: vi.fn(),
-    launchAuthorizationWindow: vi.fn(
-      async (authorizationUrl: () => Promise<string>) => {
-        await authorizationUrl()
-      },
-    ),
-  }
-})
-vi.mock('./authorization-window', () => ({
-  openAuthorizationWindow: authorization.openAuthorizationWindow,
-  navigateAuthorizationWindow: authorization.navigateAuthorizationWindow,
-  launchAuthorizationWindow: authorization.launchAuthorizationWindow,
-}))
+// Slack's consent page opens in this tab; the test only records where.
+const assign = vi.fn()
 
 // Imported after the mocks so the component sees the fakes.
 const { ManagedProjectSlack } = await import('./Slack')
@@ -196,10 +180,8 @@ describe('ManagedProjectSlack', () => {
     for (const fn of Object.values(api)) {
       if (typeof fn === 'function' && 'mockReset' in fn) fn.mockReset()
     }
-    authorization.openAuthorizationWindow.mockClear()
-    authorization.navigateAuthorizationWindow.mockClear()
-    authorization.launchAuthorizationWindow.mockClear()
-    authorization.window.close.mockClear()
+    assign.mockReset()
+    vi.spyOn(window.location, 'assign').mockImplementation(assign)
     api.getManagedProject.mockResolvedValue(project)
     api.getManagedAgentDeployment.mockResolvedValue(dedicatedDeployment)
     api.getManagedAgentChannels.mockResolvedValue([])
@@ -211,6 +193,7 @@ describe('ManagedProjectSlack', () => {
     client.clear()
     container.remove()
     document.body.replaceChildren()
+    vi.restoreAllMocks()
   })
 
   function render(
@@ -268,9 +251,11 @@ describe('ManagedProjectSlack', () => {
       () => api.authorizeManagedSlackSetup.mock.calls.length > 0,
       'authorization',
     )
-    expect(authorization.launchAuthorizationWindow).toHaveBeenCalledTimes(1)
     expect(api.authorizeManagedSlackSetup).toHaveBeenCalledWith('setup_1')
-    await settle(() => text().includes('Waiting for Slack…'), 'waiting')
+    await settle(() => assign.mock.calls.length > 0, 'navigation')
+    expect(assign).toHaveBeenCalledWith(
+      'https://slack.com/oauth/v2/authorize?state=x',
+    )
   })
 
   it('submits once per click with one request key, and retries a rejected token under the same key', async () => {
@@ -309,8 +294,6 @@ describe('ManagedProjectSlack', () => {
     })
     expect(api.startManagedSlackSetup).toHaveBeenCalledTimes(1)
     expect(button(dialog, 'Creating…').disabled).toBe(true)
-    // The window is opened inside the click, before anything asynchronous.
-    expect(authorization.openAuthorizationWindow).toHaveBeenCalledTimes(1)
 
     const firstCall = api.startManagedSlackSetup.mock.calls[0][0] as {
       requestKey: string
@@ -346,8 +329,8 @@ describe('ManagedProjectSlack', () => {
         ) ?? false,
       'the rejection',
     )
-    expect(authorization.window.close).toHaveBeenCalledTimes(1)
-    expect(authorization.navigateAuthorizationWindow).not.toHaveBeenCalled()
+    expect(assign).not.toHaveBeenCalled()
+    expect(api.authorizeManagedSlackSetup).not.toHaveBeenCalled()
     expect(tokenInput.value).toBe('')
 
     api.startManagedSlackSetup.mockResolvedValueOnce(
@@ -364,10 +347,7 @@ describe('ManagedProjectSlack', () => {
     })
     act(() => typeInto(tokenInput, 'xoxe.xoxp-second'))
     act(() => button(dialog, 'Try another token').click())
-    await settle(
-      () => authorization.navigateAuthorizationWindow.mock.calls.length > 0,
-      'the consent page',
-    )
+    await settle(() => assign.mock.calls.length > 0, 'the consent page')
     expect(api.startManagedSlackSetup).toHaveBeenCalledTimes(2)
     const secondCall = api.startManagedSlackSetup.mock.calls[1][0] as {
       requestKey: string
@@ -375,8 +355,8 @@ describe('ManagedProjectSlack', () => {
     }
     expect(secondCall.requestKey).toBe(firstCall.requestKey)
     expect(secondCall.configurationToken).toBe('xoxe.xoxp-second')
-    expect(authorization.navigateAuthorizationWindow).toHaveBeenCalledWith(
-      authorization.window,
+    expect(api.authorizeManagedSlackSetup).toHaveBeenCalledWith('setup_1')
+    expect(assign).toHaveBeenCalledWith(
       'https://slack.com/oauth/v2/authorize?state=fresh',
     )
     await settle(

@@ -51,11 +51,6 @@ import {
   type ManagedSlackSetupTarget,
 } from './api'
 import {
-  launchAuthorizationWindow,
-  navigateAuthorizationWindow,
-  openAuthorizationWindow,
-} from './authorization-window'
-import {
   DEDICATED_SLACK_CHANNEL_ID,
   SLACK_APPS_URL,
   SLACK_CONFIGURATION_TOKEN_STEPS,
@@ -63,6 +58,7 @@ import {
   describeSlackSetup,
   describeSlackVerification,
   newSlackSetupRequestKey,
+  slackAuthorizationHref,
   slackReturnFromSearch,
   slackSlotsForEnvironment,
   withoutSlackReturn,
@@ -74,27 +70,14 @@ import { ManagedSlackWizard } from './SlackWizard'
 type Environment = 'development' | 'production'
 
 /**
- * Which setup state Slack's consent page was opened for. The page is polled
- * while that state holds; any recorded outcome changes the phase or the
- * error and ends the wait by itself.
+ * Slack's consent page opens in this tab. The platform brings the browser
+ * back to this project and environment with the outcome in the query, and
+ * the setup is rediscovered by target; a consent page closed halfway leaves
+ * the app created and "Authorize in Slack" offered again.
  */
-type AuthorizationLaunch = { setupId: string; errorAt: string }
-
-function launchFor(setup: ManagedSlackSetup): AuthorizationLaunch {
-  return { setupId: setup.id, errorAt: setup.error?.at ?? '' }
-}
-
-function awaitingAuthorizationFor(
-  launch: AuthorizationLaunch | undefined,
-  setup: ManagedSlackSetup | null | undefined,
-): boolean {
-  return Boolean(
-    launch &&
-    setup &&
-    setup.id === launch.setupId &&
-    setup.phase === 'app_created' &&
-    (setup.error?.at ?? '') === launch.errorAt,
-  )
+async function openSlackAuthorization(setupId: string) {
+  const { authorizationUrl } = await authorizeManagedSlackSetup(setupId)
+  window.location.assign(slackAuthorizationHref(authorizationUrl))
 }
 
 const setupQueryKey = (target: ManagedSlackSetupTarget) => [
@@ -359,8 +342,6 @@ function SlackAutomaticSetup({
   const connected = connection?.status === 'connected'
   const [dialogOpen, setDialogOpen] = useState(false)
   const [confirmCancel, setConfirmCancel] = useState(false)
-  const [authorizationLaunch, setAuthorizationLaunch] =
-    useState<AuthorizationLaunch>()
 
   const setupQuery = useQuery({
     queryKey,
@@ -368,28 +349,11 @@ function SlackAutomaticSetup({
     enabled: !connected,
     refetchOnWindowFocus: true,
     refetchInterval: (query) => {
-      const current = query.state.data
-      return current?.phase === 'creating' ||
-        current?.phase === 'exchanging' ||
-        awaitingAuthorizationFor(authorizationLaunch, current)
-        ? 2_000
-        : false
+      const phase = query.state.data?.phase
+      return phase === 'creating' || phase === 'exchanging' ? 2_000 : false
     },
   })
   const setup = connected ? undefined : setupQuery.data
-  const awaitingAuthorization = awaitingAuthorizationFor(
-    authorizationLaunch,
-    setup,
-  )
-  useEffect(() => {
-    if (!authorizationLaunch) return
-    // Authorization links last ten minutes; stop polling after that.
-    const timeout = window.setTimeout(
-      () => setAuthorizationLaunch(undefined),
-      10 * 60_000,
-    )
-    return () => window.clearTimeout(timeout)
-  }, [authorizationLaunch])
 
   // A connected bot has not proven itself until a real message arrives.
   const verificationPending = Boolean(
@@ -406,14 +370,7 @@ function SlackAutomaticSetup({
   }, [queryClient, verificationPending])
 
   const authorize = useMutation({
-    mutationFn: (current: ManagedSlackSetup) =>
-      launchAuthorizationWindow(async () => {
-        const { authorizationUrl } = await authorizeManagedSlackSetup(
-          current.id,
-        )
-        return authorizationUrl
-      }),
-    onSuccess: (_result, current) => setAuthorizationLaunch(launchFor(current)),
+    mutationFn: (setupId: string) => openSlackAuthorization(setupId),
     onError: (error) =>
       notifyError("Couldn't start the Slack installation.", error),
   })
@@ -519,15 +476,13 @@ function SlackAutomaticSetup({
           {showAuthorize && setup ? (
             <Button
               size="sm"
-              disabled={authorize.isPending || awaitingAuthorization}
-              onClick={() => authorize.mutate(setup)}
+              disabled={authorize.isPending}
+              onClick={() => authorize.mutate(setup.id)}
             >
               {authorize.isPending ? (
                 <Loader2 className="animate-spin" />
               ) : null}
-              {awaitingAuthorization
-                ? 'Waiting for Slack…'
-                : view.primary!.label}
+              {authorize.isPending ? 'Opening Slack…' : view.primary!.label}
             </Button>
           ) : null}
           {uncertain ? (
@@ -567,7 +522,6 @@ function SlackAutomaticSetup({
               : `${slot.name} · ${environment}`
           }
           onClose={() => setDialogOpen(false)}
-          onAwaitingAuthorization={setAuthorizationLaunch}
         />
       ) : null}
 
@@ -599,14 +553,12 @@ function SlackSetupDialog({
   defaultName,
   slotLabel,
   onClose,
-  onAwaitingAuthorization,
 }: {
   target: ManagedSlackSetupTarget
   setup?: ManagedSlackSetup
   defaultName: string
   slotLabel: string
   onClose: () => void
-  onAwaitingAuthorization: (launch: AuthorizationLaunch) => void
 }) {
   const queryClient = useQueryClient()
   const queryKey = setupQueryKey(target)
@@ -620,22 +572,16 @@ function SlackSetupDialog({
   const [submitError, setSubmitError] = useState<string>()
 
   const start = useMutation({
-    mutationFn: async (input: {
-      configurationToken: string
-      authorizationWindow: Window
-    }) => {
+    mutationFn: async (configurationToken: string) => {
       const result = await startManagedSlackSetup({
         ...target,
         name: name.trim(),
         requestKey,
-        configurationToken: input.configurationToken,
+        configurationToken,
       })
-      if (result.phase === 'app_created') {
-        const { authorizationUrl } = await authorizeManagedSlackSetup(result.id)
-        navigateAuthorizationWindow(input.authorizationWindow, authorizationUrl)
-      } else {
-        input.authorizationWindow.close()
-      }
+      // The app exists: straight on to Slack's consent page.
+      if (result.phase === 'app_created')
+        await openSlackAuthorization(result.id)
       return result
     },
     onSuccess: (result) => {
@@ -645,13 +591,9 @@ function SlackSetupDialog({
         setOutcome(result)
         return
       }
-      if (result.phase === 'app_created') {
-        onAwaitingAuthorization(launchFor(result))
-      }
       onClose()
     },
-    onError: (error, input) => {
-      input.authorizationWindow.close()
+    onError: (error) => {
       if (error instanceof ApiError && error.type === 'slack_setup_active') {
         void queryClient.invalidateQueries({ queryKey })
         notifyError('A Slack setup is already in progress.', error)
@@ -683,16 +625,7 @@ function SlackSetupDialog({
     if (start.isPending || !name.trim() || !token.trim()) return
     setOutcome(undefined)
     setSubmitError(undefined)
-    // Opened now, inside the click, so the browser allows it; navigated to
-    // Slack's consent page once the app exists, closed otherwise.
-    let authorizationWindow: Window
-    try {
-      authorizationWindow = openAuthorizationWindow()
-    } catch (error) {
-      setSubmitError(error instanceof Error ? error.message : String(error))
-      return
-    }
-    start.mutate({ configurationToken: token.trim(), authorizationWindow })
+    start.mutate(token.trim())
   }
   const rejected = outcome?.error ? describeSlackSetup(outcome) : undefined
 

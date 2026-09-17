@@ -9,6 +9,7 @@ import {
   describeSlackSetup,
   describeSlackVerification,
   newSlackSetupRequestKey,
+  slackAuthorizationHref,
   slackReturnFromSearch,
   slackSlotsForEnvironment,
   withoutSlackReturn,
@@ -232,6 +233,20 @@ describe('setup copy', () => {
     const key = newSlackSetupRequestKey()
     expect(key).toMatch(/^[A-Za-z0-9_-]{16,128}$/)
     expect(newSlackSetupRequestKey()).not.toBe(key)
+  })
+
+  it('sends the browser only to Slack consent pages', () => {
+    const url =
+      'https://slack.com/oauth/v2/authorize?client_id=1&scope=chat:write&state=s'
+    expect(slackAuthorizationHref(url)).toBe(url)
+    for (const wrong of [
+      'http://slack.com/oauth/v2/authorize?state=s',
+      'https://slack.com.evil.example/oauth/v2/authorize?state=s',
+      'https://slack.com/oauth/authorize?state=s',
+      'javascript:alert(1)',
+    ]) {
+      expect(() => slackAuthorizationHref(wrong)).toThrow()
+    }
   })
 
   it('leads with the permitted next action for each phase', () => {

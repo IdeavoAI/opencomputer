@@ -23,6 +23,22 @@ export function newSlackSetupRequestKey(): string {
   return crypto.randomUUID()
 }
 
+/**
+ * The only place the browser is sent from an API response. The platform
+ * builds the URL itself, but the check keeps a wrong or tampered value from
+ * navigating anywhere but Slack's consent page.
+ */
+export function slackAuthorizationHref(url: string): string {
+  const parsed = new URL(url)
+  if (
+    parsed.origin !== 'https://slack.com' ||
+    parsed.pathname !== '/oauth/v2/authorize'
+  ) {
+    throw new Error('Unexpected Slack authorization URL')
+  }
+  return url
+}
+
 // ---------------------------------------------------------------------------
 // Return from Slack's consent page. The platform redirects the browser to the
 // project's Connections tab with these two parameters; the tab shows the
