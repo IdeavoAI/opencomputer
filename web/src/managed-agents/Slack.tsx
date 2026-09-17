@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import {
   useMutation,
   useQueries,
@@ -109,7 +109,8 @@ export function ManagedProjectSlack({
     slackReturnFromSearch(searchParams.toString()),
   )
   useEffect(() => {
-    if (!slackReturnFromSearch(searchParams.toString())) return
+    // Known or not, the parameters are consumed here and never left behind.
+    if (!searchParams.has('slack')) return
     void queryClient.invalidateQueries({ queryKey: ['managed-agent-channels'] })
     void queryClient.invalidateQueries({ queryKey: ['managed-slack-setup'] })
     setSearchParams(
@@ -219,8 +220,8 @@ export function ManagedProjectSlack({
             slot={slot}
             environment={environment}
             agentNames={agentNames}
-            highlighted={
-              returned?.setupId !== undefined && returned.result !== 'connected'
+            highlightedSetupId={
+              returned?.result !== 'connected' ? returned?.setupId : undefined
             }
           />
         ))
@@ -275,12 +276,12 @@ function SlackSlotRow({
   slot,
   environment,
   agentNames,
-  highlighted,
+  highlightedSetupId,
 }: {
   slot: SlackSlot
   environment: Environment
   agentNames: Map<string, string>
-  highlighted: boolean
+  highlightedSetupId?: string
 }) {
   const consumerNames = slot.consumers.map(
     (agentId) => agentNames.get(agentId) ?? agentId,
@@ -300,15 +301,14 @@ function SlackSlotRow({
           ? `Mentions and direct messages go to ${consumerNames.join(', ')}`
           : `Consumed by ${consumerNames.join(', ')}`
       }
-      setup={({ beginManual }) => (
+      setup={
         <SlackAutomaticSetup
           slot={slot}
           environment={environment}
           agentName={agentName}
-          onSetUpManually={beginManual}
-          highlighted={highlighted}
+          highlightedSetupId={highlightedSetupId}
         />
-      )}
+      }
     />
   )
 }
@@ -322,14 +322,12 @@ function SlackAutomaticSetup({
   slot,
   environment,
   agentName,
-  onSetUpManually,
-  highlighted,
+  highlightedSetupId,
 }: {
   slot: SlackSlot
   environment: Environment
   agentName: string
-  onSetUpManually: () => void
-  highlighted: boolean
+  highlightedSetupId?: string
 }) {
   const queryClient = useQueryClient()
   const target: ManagedSlackSetupTarget = {
@@ -353,7 +351,14 @@ function SlackAutomaticSetup({
       return phase === 'creating' || phase === 'exchanging' ? 2_000 : false
     },
   })
-  const setup = connected ? undefined : setupQuery.data
+  // The lookup answers the latest non-cancelled setup, so after Disconnect it
+  // is the old connected one: that is history, and a new setup starts fresh.
+  const setup =
+    connected || setupQuery.data?.phase === 'connected'
+      ? undefined
+      : setupQuery.data
+  const highlighted =
+    highlightedSetupId !== undefined && setup?.id === highlightedSetupId
 
   // A connected bot has not proven itself until a real message arrives.
   const verificationPending = Boolean(
@@ -369,11 +374,22 @@ function SlackAutomaticSetup({
     return () => window.clearInterval(interval)
   }, [queryClient, verificationPending])
 
+  // Set before the mutation is asked to run, so two clicks in one task
+  // cannot both issue a state; `isPending` is only a render snapshot.
+  const authorizing = useRef(false)
   const authorize = useMutation({
     mutationFn: (setupId: string) => openSlackAuthorization(setupId),
     onError: (error) =>
       notifyError("Couldn't start the Slack installation.", error),
+    onSettled: () => {
+      authorizing.current = false
+    },
   })
+  const startAuthorization = (setupId: string) => {
+    if (authorizing.current) return
+    authorizing.current = true
+    authorize.mutate(setupId)
+  }
   const cancel = useMutation({
     mutationFn: (setupId: string) => cancelManagedSlackSetup(setupId),
     onSuccess: () => {
@@ -409,6 +425,41 @@ function SlackAutomaticSetup({
             {verification.description}
           </p>
         </div>
+      </div>
+    )
+  }
+
+  if (setupQuery.isError) {
+    const unavailable =
+      setupQuery.error instanceof ApiError &&
+      setupQuery.error.type === 'slack_setup_unavailable'
+    return (
+      <div className="flex items-start gap-3 border-t px-5 py-4">
+        <TriangleAlert
+          className="text-status-error mt-0.5 size-5 shrink-0"
+          aria-hidden
+        />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium">
+            {unavailable
+              ? 'Automatic setup is not available right now'
+              : 'Couldn’t check for a setup in progress'}
+          </p>
+          <p className="text-muted-foreground text-sm">
+            {unavailable
+              ? 'Set up the app manually with the button above.'
+              : setupQuery.error.message}
+          </p>
+        </div>
+        {!unavailable ? (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => void setupQuery.refetch()}
+          >
+            Try again
+          </Button>
+        ) : null}
       </div>
     )
   }
@@ -477,7 +528,7 @@ function SlackAutomaticSetup({
             <Button
               size="sm"
               disabled={authorize.isPending}
-              onClick={() => authorize.mutate(setup.id)}
+              onClick={() => startAuthorization(setup.id)}
             >
               {authorize.isPending ? (
                 <Loader2 className="animate-spin" />
@@ -486,18 +537,11 @@ function SlackAutomaticSetup({
             </Button>
           ) : null}
           {uncertain ? (
-            <>
-              <Button asChild size="sm" variant="outline">
-                <a href={SLACK_APPS_URL} target="_blank" rel="noreferrer">
-                  Open your Slack apps <ExternalLink />
-                </a>
-              </Button>
-              {actions.includes('manual') ? (
-                <Button size="sm" variant="outline" onClick={onSetUpManually}>
-                  Set up manually
-                </Button>
-              ) : null}
-            </>
+            <Button asChild size="sm" variant="outline">
+              <a href={SLACK_APPS_URL} target="_blank" rel="noreferrer">
+                Open your Slack apps <ExternalLink />
+              </a>
+            </Button>
           ) : null}
           {setup && actions.includes('cancel') ? (
             <Button
@@ -570,22 +614,33 @@ function SlackSetupDialog({
   const [token, setToken] = useState('')
   const [outcome, setOutcome] = useState<ManagedSlackSetup>()
   const [submitError, setSubmitError] = useState<string>()
+  // The token travels through a ref, not as mutation variables, so the
+  // mutation cache never holds it; it is read once and dropped.
+  const tokenRef = useRef('')
+  // Set before the mutation is asked to run: `isPending` is a render
+  // snapshot, and two submit events in one task would both pass it.
+  const inFlight = useRef(false)
 
   const start = useMutation({
-    mutationFn: async (configurationToken: string) => {
+    gcTime: 0,
+    mutationFn: async () => {
+      const configurationToken = tokenRef.current
+      tokenRef.current = ''
       const result = await startManagedSlackSetup({
         ...target,
         name: name.trim(),
         requestKey,
         configurationToken,
       })
+      // Cached before anything else can fail, so the panel shows the app
+      // that now exists even if opening Slack does not work out.
+      queryClient.setQueryData(queryKey, result)
       // The app exists: straight on to Slack's consent page.
       if (result.phase === 'app_created')
         await openSlackAuthorization(result.id)
       return result
     },
     onSuccess: (result) => {
-      queryClient.setQueryData(queryKey, result)
       if (result.phase === 'prepared') {
         // An explicit rejection with no side effect: fix the token, same key.
         setOutcome(result)
@@ -594,8 +649,9 @@ function SlackSetupDialog({
       onClose()
     },
     onError: (error) => {
+      // Whatever failed, the platform's record is the truth to show next.
+      void queryClient.invalidateQueries({ queryKey })
       if (error instanceof ApiError && error.type === 'slack_setup_active') {
-        void queryClient.invalidateQueries({ queryKey })
         notifyError('A Slack setup is already in progress.', error)
         onClose()
         return
@@ -617,15 +673,20 @@ function SlackSetupDialog({
           : 'The Slack app could not be created.',
       )
     },
-    onSettled: () => setToken(''),
+    onSettled: () => {
+      inFlight.current = false
+      setToken('')
+    },
   })
 
   const submit = (event: FormEvent) => {
     event.preventDefault()
-    if (start.isPending || !name.trim() || !token.trim()) return
+    if (inFlight.current || !name.trim() || !token.trim()) return
+    inFlight.current = true
+    tokenRef.current = token.trim()
     setOutcome(undefined)
     setSubmitError(undefined)
-    start.mutate(token.trim())
+    start.mutate()
   }
   const rejected = outcome?.error ? describeSlackSetup(outcome) : undefined
 

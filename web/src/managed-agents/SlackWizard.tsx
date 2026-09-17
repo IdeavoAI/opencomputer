@@ -153,10 +153,9 @@ export function ManagedSlackWizard({
   consumers?: string
   /**
    * Automatic setup rendered under the header (Project Connections). When
-   * present this wizard is the "Set up manually" fallback; `beginManual`
-   * opens it, for the case where the automatic path can only hand over.
+   * present this wizard is the "Set up manually" fallback.
    */
-  setup?: (controls: { beginManual: () => void }) => ReactNode
+  setup?: ReactNode
 }) {
   const queryClient = useQueryClient()
   const [open, setOpen] = useState(false)
@@ -344,7 +343,7 @@ export function ManagedSlackWizard({
         </div>
       </div>
 
-      {setup?.({ beginManual: begin })}
+      {setup}
 
       {connection?.status === 'connected'
         ? destinations.map((destination) => (

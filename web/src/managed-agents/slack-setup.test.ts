@@ -166,6 +166,44 @@ describe('slack setup slots', () => {
     ])
   })
 
+  it('keys an unconnected declared channel by the first registered agent in sorted order', () => {
+    const resources = {
+      channels: [
+        { id: 'team-slack', type: 'slack' as const, destinations: {} },
+      ],
+      channelRegistrations: [
+        { agentId: 'reviewer', channelId: 'team-slack', triggers: [] },
+        { agentId: 'coder', channelId: 'team-slack', triggers: [] },
+      ],
+      schedules: [],
+    }
+    const agents = [
+      { localId: 'coder', agentId: 'coder' },
+      { localId: 'reviewer', agentId: 'reviewer' },
+    ]
+    const forward = slackSlotsForEnvironment({
+      project,
+      deployments: [
+        deployment('coder', { agents, resources }),
+        deployment('reviewer', { agents, resources, localAgentId: 'reviewer' }),
+      ],
+      channels: [],
+      environment: 'development',
+    })
+    const reversed = slackSlotsForEnvironment({
+      project,
+      deployments: [
+        deployment('reviewer', { agents, resources, localAgentId: 'reviewer' }),
+        deployment('coder', { agents, resources }),
+      ],
+      channels: [],
+      environment: 'development',
+    })
+    expect(forward[0]?.agentId).toBe('coder')
+    expect(reversed[0]?.agentId).toBe('coder')
+    expect(reversed[0]?.consumers).toEqual(['coder', 'reviewer'])
+  })
+
   it('keys the slot by the agent that owns the existing connection and takes its consumers', () => {
     const slots = slackSlotsForEnvironment({
       project,
@@ -202,7 +240,8 @@ describe('slack setup slots', () => {
     expect(slots[0]).toEqual(
       expect.objectContaining({
         agentId: 'reviewer',
-        consumers: ['reviewer', 'coder'],
+        // Consumers are shown in sorted order whatever the platform's order.
+        consumers: ['coder', 'reviewer'],
       }),
     )
     expect(slots[0]?.connection?.id).toBe('channel_1')

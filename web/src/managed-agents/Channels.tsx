@@ -78,6 +78,11 @@ export default function ManagedAgentChannels() {
               channel.agents.length ? channel.agents : [channel.agentId]
             ).map((agentId) => agentNames.get(agentId) ?? agentId)
             const projectId = projectByAgent.get(channel.agentId)
+            // Slack apps are set up on Connections; Twilio has no section
+            // there, its wizard lives on the project's Channels tab.
+            const tab =
+              channel.channel === 'twilio' ? 'channels' : 'connections'
+            const tabLabel = tab === 'channels' ? 'Channels' : 'Connections'
             return (
               <Panel key={channel.id}>
                 <PanelContent className="flex items-center gap-3">
@@ -101,10 +106,10 @@ export default function ManagedAgentChannels() {
                   {projectId ? (
                     <Button asChild variant="ghost" size="sm">
                       <Link
-                        to={`/projects/${encodeURIComponent(projectId)}/connections?environment=${channel.alias}`}
-                        aria-label="Open in project Connections"
+                        to={`/projects/${encodeURIComponent(projectId)}/${tab}?environment=${channel.alias}`}
+                        aria-label={`Open in project ${tabLabel}`}
                       >
-                        Connections <ArrowUpRight />
+                        {tabLabel} <ArrowUpRight />
                       </Link>
                     </Button>
                   ) : null}

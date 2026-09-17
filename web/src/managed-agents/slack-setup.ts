@@ -494,13 +494,20 @@ export function slackSlotsForEnvironment(input: {
           : entry.registeredBy.length
             ? entry.registeredBy
             : entry.declaredBy,
-      )
+      ).sort()
       return {
         key: `channel:${channelId}`,
         channelId,
         name: entry.name,
         dedicated: false,
-        agentId: connection?.agentId ?? consumers[0] ?? entry.declaredBy[0],
+        // The connection and its setup are keyed by one agent. With a
+        // connection that is its owner; without one, the first consumer in
+        // sorted order, so the slot is the same whichever deployment the
+        // page loaded first.
+        agentId:
+          connection?.agentId ??
+          consumers[0] ??
+          [...entry.declaredBy].sort()[0],
         consumers,
         destinations: entry.destinations,
         connection,

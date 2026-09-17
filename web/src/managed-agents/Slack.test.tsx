@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { ApiError } from '@/api/client'
 import type {
   ManagedAgentChannel,
   ManagedAgentDeployment,
@@ -372,6 +373,7 @@ describe('ManagedProjectSlack', () => {
       title: string
       offered: string[]
       withheld: string[]
+      once?: string[]
     }> = [
       {
         setup: setup({
@@ -405,6 +407,7 @@ describe('ManagedProjectSlack', () => {
         }),
         title: 'The result of app creation was lost',
         offered: ['Open your Slack apps', 'Set up manually', 'Cancel setup'],
+        once: ['Set up manually'],
         withheld: [
           'Create Slack bot',
           'Try another token',
@@ -493,6 +496,12 @@ describe('ManagedProjectSlack', () => {
       for (const label of testCase.offered) expect(offered).toContain(label)
       for (const label of testCase.withheld)
         expect(offered).not.toContain(label)
+      for (const label of testCase.once ?? []) {
+        expect(
+          offered.filter((text) => text === label),
+          label,
+        ).toHaveLength(1)
+      }
       if (testCase.setup.phase === 'creation_uncertain') {
         expect(text()).toContain('Check your Slack app list')
         expect(
@@ -570,5 +579,254 @@ describe('ManagedProjectSlack', () => {
       'verified',
     )
     expect(text()).not.toContain('Waiting for the first message')
+  })
+
+  it('offers a fresh setup when the lookup returns a connected record but the slot is not connected', async () => {
+    // After Disconnect the platform still answers the last, connected setup.
+    api.findManagedSlackSetup.mockResolvedValue(
+      setup({
+        phase: 'connected',
+        app: { id: 'A1', name: 'Patch' },
+        workspace: { id: 'T1', name: 'Acme' },
+        actions: [],
+      }),
+    )
+    render()
+    await settle(() => text().includes('Create Slack bot'), 'a fresh offer')
+    expect(text()).not.toContain('Slack app installed')
+
+    act(() => button(container, 'Create Slack bot').click())
+    await settle(
+      () => document.body.querySelector('#managed-slack-setup-name') !== null,
+      'the dialog',
+    )
+    const nameInput = document.body.querySelector(
+      '#managed-slack-setup-name',
+    ) as HTMLInputElement
+    expect(nameInput.readOnly).toBe(false)
+    const tokenInput = document.body.querySelector(
+      '#managed-slack-setup-token',
+    ) as HTMLInputElement
+    act(() => typeInto(tokenInput, 'xoxe.xoxp-new'))
+    api.startManagedSlackSetup.mockResolvedValueOnce(
+      setup({ phase: 'creating' }),
+    )
+    act(() =>
+      button(
+        tokenInput.closest('[role="dialog"]') as HTMLElement,
+        'Create Slack bot',
+      ).click(),
+    )
+    await settle(
+      () => api.startManagedSlackSetup.mock.calls.length === 1,
+      'the submit',
+    )
+    const input = api.startManagedSlackSetup.mock.calls[0][0] as {
+      requestKey: string
+    }
+    expect(input.requestKey).not.toBe('stored_0123456789')
+  })
+
+  it('sends one request for two submits in the same task, and one authorize for two clicks', async () => {
+    render()
+    await settle(() => text().includes('Create Slack bot'), 'the slot')
+    act(() => button(container, 'Create Slack bot').click())
+    await settle(
+      () => document.body.querySelector('#managed-slack-setup-token') !== null,
+      'the dialog',
+    )
+    const tokenInput = document.body.querySelector(
+      '#managed-slack-setup-token',
+    ) as HTMLInputElement
+    act(() => typeInto(tokenInput, 'xoxe.xoxp-first'))
+    const pending = deferred<ManagedSlackSetup>()
+    api.startManagedSlackSetup.mockReturnValueOnce(pending.promise)
+    const form = tokenInput.closest('form') as HTMLFormElement
+    act(() => {
+      form.dispatchEvent(
+        new Event('submit', { bubbles: true, cancelable: true }),
+      )
+      form.dispatchEvent(
+        new Event('submit', { bubbles: true, cancelable: true }),
+      )
+    })
+    await settle(
+      () => api.startManagedSlackSetup.mock.calls.length > 0,
+      'the submit',
+    )
+    expect(api.startManagedSlackSetup).toHaveBeenCalledTimes(1)
+    await act(async () => {
+      pending.resolve(setup({ phase: 'creating', actions: [] }))
+      await pending.promise
+    })
+    await settle(
+      () => document.body.querySelector('#managed-slack-setup-token') === null,
+      'the dialog to close',
+    )
+
+    act(() => root.unmount())
+    root = createRoot(container)
+    client.clear()
+    api.findManagedSlackSetup.mockResolvedValue(
+      setup({
+        phase: 'app_created',
+        app: { id: 'A1', name: 'Patch' },
+        actions: ['authorize', 'cancel'],
+      }),
+    )
+    const authorizing = deferred<{
+      authorizationUrl: string
+      expiresAt: string
+    }>()
+    api.authorizeManagedSlackSetup.mockReturnValueOnce(authorizing.promise)
+    render()
+    await settle(() => text().includes('Authorize in Slack'), 'resume')
+    act(() => {
+      button(container, 'Authorize in Slack').click()
+      button(container, 'Authorize in Slack').click()
+    })
+    await settle(
+      () => api.authorizeManagedSlackSetup.mock.calls.length > 0,
+      'the authorize call',
+    )
+    expect(api.authorizeManagedSlackSetup).toHaveBeenCalledTimes(1)
+    await act(async () => {
+      authorizing.resolve({
+        authorizationUrl: 'https://slack.com/oauth/v2/authorize?state=once',
+        expiresAt: '2026-09-17T00:10:00.000Z',
+      })
+      await authorizing.promise
+    })
+    await settle(() => assign.mock.calls.length > 0, 'navigation')
+    expect(assign).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows a retryable error when the lookup fails, and manual-only when automatic setup is unavailable', async () => {
+    api.findManagedSlackSetup.mockRejectedValueOnce(
+      new ApiError(
+        'Automatic Slack setup is not available right now.',
+        503,
+        'slack_setup_unavailable',
+      ),
+    )
+    render()
+    await settle(
+      () => text().includes('Automatic setup is not available'),
+      'the unavailable state',
+    )
+    expect(buttons(container)).not.toContain('Create Slack bot')
+    expect(buttons(container)).not.toContain('Try again')
+    expect(buttons(container)).toContain('Set up manually')
+
+    act(() => root.unmount())
+    root = createRoot(container)
+    client.clear()
+    api.findManagedSlackSetup.mockReset()
+    api.findManagedSlackSetup
+      .mockRejectedValueOnce(new Error('network down'))
+      .mockResolvedValue(null)
+    render()
+    await settle(() => buttons(container).includes('Try again'), 'the error')
+    expect(buttons(container)).not.toContain('Create Slack bot')
+    act(() => button(container, 'Try again').click())
+    await settle(() => text().includes('Create Slack bot'), 'the retry')
+  })
+
+  it('keeps the created setup visible when opening Slack fails', async () => {
+    render()
+    await settle(() => text().includes('Create Slack bot'), 'the slot')
+    act(() => button(container, 'Create Slack bot').click())
+    await settle(
+      () => document.body.querySelector('#managed-slack-setup-token') !== null,
+      'the dialog',
+    )
+    const tokenInput = document.body.querySelector(
+      '#managed-slack-setup-token',
+    ) as HTMLInputElement
+    act(() => typeInto(tokenInput, 'xoxe.xoxp-first'))
+    const created = setup({
+      phase: 'app_created',
+      app: { id: 'A1', name: 'Patch' },
+      actions: ['authorize', 'cancel'],
+    })
+    api.startManagedSlackSetup.mockResolvedValueOnce(created)
+    api.findManagedSlackSetup.mockResolvedValue(created)
+    api.authorizeManagedSlackSetup.mockRejectedValueOnce(
+      new Error('authorize failed'),
+    )
+    const lookups = api.findManagedSlackSetup.mock.calls.length
+    act(() =>
+      button(
+        tokenInput.closest('[role="dialog"]') as HTMLElement,
+        'Create Slack bot',
+      ).click(),
+    )
+    await settle(
+      () => document.body.textContent?.includes('authorize failed') ?? false,
+      'the error',
+    )
+    expect(text()).toContain('Approve its installation')
+    await settle(
+      () => api.findManagedSlackSetup.mock.calls.length > lookups,
+      'the lookup to be refreshed',
+    )
+  })
+
+  it('clears an unknown return result from the URL without announcing it', async () => {
+    render(
+      '/projects/prj_1/connections?environment=development&slack=bogus&setup=s',
+    )
+    await settle(
+      () =>
+        container.querySelector('[data-testid="search"]')?.textContent ===
+        '?environment=development',
+      'the URL to be cleared',
+    )
+    expect(container.querySelector('[role="status"]')).toBeNull()
+  })
+
+  it('leaves no configuration token in the mutation cache', async () => {
+    render()
+    await settle(() => text().includes('Create Slack bot'), 'the slot')
+    act(() => button(container, 'Create Slack bot').click())
+    await settle(
+      () => document.body.querySelector('#managed-slack-setup-token') !== null,
+      'the dialog',
+    )
+    const tokenInput = document.body.querySelector(
+      '#managed-slack-setup-token',
+    ) as HTMLInputElement
+    act(() => typeInto(tokenInput, 'xoxe.xoxp-secret-token'))
+    api.startManagedSlackSetup.mockResolvedValueOnce(
+      setup({
+        error: {
+          code: 'slack_configuration_token_invalid',
+          message: 'invalid_auth',
+          recoverable: true,
+          at: '2026-09-17T00:01:00.000Z',
+        },
+      }),
+    )
+    act(() =>
+      button(
+        tokenInput.closest('[role="dialog"]') as HTMLElement,
+        'Create Slack bot',
+      ).click(),
+    )
+    await settle(
+      () =>
+        document.body.textContent?.includes(
+          'Slack rejected the configuration token',
+        ) ?? false,
+      'the rejection',
+    )
+    expect(api.startManagedSlackSetup).toHaveBeenCalledWith(
+      expect.objectContaining({ configurationToken: 'xoxe.xoxp-secret-token' }),
+    )
+    const states = client
+      .getMutationCache()
+      .getAll()
+      .map((mutation) => JSON.stringify(mutation.state))
+    expect(states.join('\n')).not.toContain('xoxe.xoxp-secret-token')
   })
 })
