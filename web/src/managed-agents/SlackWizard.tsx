@@ -1,5 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { Link } from 'react-router-dom'
+import { ApiError } from '@/api/client'
 import {
   Check,
   Copy,
@@ -31,6 +33,7 @@ import {
   type ManagedAgentChannel,
   type ManagedSlackManifest,
 } from './api'
+import { slackSetupAnchorId } from './slack-setup'
 
 type Step = 'create' | 'details' | 'install' | 'done'
 const CREATE_STEPS = ['Create app', 'Details', 'Install', 'Verify']
@@ -141,6 +144,7 @@ export function ManagedSlackWizard({
   destinations = [],
   consumers,
   setup,
+  connectionsHref,
 }: {
   agentId: string
   alias: string
@@ -156,6 +160,11 @@ export function ManagedSlackWizard({
    * present this wizard is the "Set up manually" fallback.
    */
   setup?: ReactNode
+  /**
+   * Where the automated setup lives when it is not on this page (the
+   * project's Connections tab), for a blocked manual completion.
+   */
+  connectionsHref?: string
 }) {
   const queryClient = useQueryClient()
   const [open, setOpen] = useState(false)
@@ -169,6 +178,11 @@ export function ManagedSlackWizard({
   const [verificationBaseline, setVerificationBaseline] = useState<string>()
   const [confirmDisconnect, setConfirmDisconnect] = useState(false)
   const [copied, markCopied] = useTransientFlag(1500)
+  // The platform's reason a manual save is refused while an automated setup
+  // owns this connection or the pasted manifest is stale.
+  const [blocked, setBlocked] = useState<string>()
+  const setupAnchor = slackSetupAnchorId({ agentId, alias, channelId })
+  const setupOnPage = Boolean(blocked && document.getElementById(setupAnchor))
 
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: ['managed-agent-channels'] })
@@ -204,8 +218,16 @@ export function ManagedSlackWizard({
       setBotToken('')
       void invalidate()
     },
-    onError: (error) =>
-      notifyError('Slack rejected those values. Double-check them.', error),
+    onError: (error) => {
+      if (
+        error instanceof ApiError &&
+        error.type === 'slack_manual_completion_blocked'
+      ) {
+        setBlocked(error.message)
+        return
+      }
+      notifyError('Slack rejected those values. Double-check them.', error)
+    },
   })
   const disconnect = useMutation({
     mutationFn: () => disconnectManagedAgentSlack(connection!.id),
@@ -217,6 +239,7 @@ export function ManagedSlackWizard({
   })
 
   const reset = () => {
+    setBlocked(undefined)
     setStep('create')
     setEditing(false)
     setManifest(undefined)
@@ -228,6 +251,13 @@ export function ManagedSlackWizard({
   const begin = () => {
     reset()
     setOpen(true)
+  }
+  const showAutomatedSetup = () => {
+    setOpen(false)
+    reset()
+    document
+      .getElementById(setupAnchor)
+      ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
   }
   const beginEdit = () => {
     reset()
@@ -512,6 +542,34 @@ export function ManagedSlackWizard({
                   placeholder="xoxb-…"
                 />
               </Field>
+              {blocked ? (
+                <div
+                  role="alert"
+                  className="bg-status-error-bg/30 space-y-2 rounded-md px-3 py-2"
+                >
+                  <div className="flex items-start gap-2">
+                    <TriangleAlert
+                      className="text-status-error mt-0.5 size-4 shrink-0"
+                      aria-hidden
+                    />
+                    <p className="text-sm">{blocked}</p>
+                  </div>
+                  {setupOnPage ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={showAutomatedSetup}
+                    >
+                      Show the automated setup
+                    </Button>
+                  ) : connectionsHref ? (
+                    <Button asChild variant="outline" size="sm">
+                      <Link to={connectionsHref}>Open Connections</Link>
+                    </Button>
+                  ) : null}
+                </div>
+              ) : null}
               <DialogFooter>
                 <Button
                   type="button"

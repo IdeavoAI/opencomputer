@@ -665,6 +665,11 @@ export default function ManagedAgentDetail({
   const activeAliasChannel = activeAliasChannels[0]
   const declaredChannels =
     activeDeployment.data?.projectDeployment?.resources.channels ?? []
+  // Slack apps are set up on Connections; the wizard points there when a
+  // manual completion is blocked by an automated setup.
+  const connectionsHref = project
+    ? `/projects/${encodeURIComponent(project.project.id)}/connections?environment=${environment}`
+    : undefined
 
   const sessionColumns: Column<ManagedAgentSessionSummary>[] = [
     {
@@ -1190,6 +1195,7 @@ export default function ManagedAgentDetail({
                     )}
                     channelId={declaredChannel.id}
                     destinations={Object.keys(declaredChannel.destinations)}
+                    connectionsHref={connectionsHref}
                   />
                 ),
               )
@@ -1199,6 +1205,7 @@ export default function ManagedAgentDetail({
                 alias={activeDeployment.data.alias}
                 agentName={displayManagedAgentName(agent)}
                 connection={activeAliasChannel}
+                connectionsHref={connectionsHref}
               />
             )
           ) : (

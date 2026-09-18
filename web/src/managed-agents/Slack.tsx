@@ -59,6 +59,7 @@ import {
   describeSlackVerification,
   newSlackSetupRequestKey,
   slackAuthorizationHref,
+  slackSetupAnchorId,
   slackReturnFromSearch,
   slackSlotsForEnvironment,
   withoutSlackReturn,
@@ -495,6 +496,7 @@ function SlackAutomaticSetup({
 
   return (
     <div
+      id={slackSetupAnchorId(target)}
       className={cn(
         'space-y-3 border-t px-5 py-4',
         highlighted && view.tone === 'error' && 'bg-status-error-bg/20',

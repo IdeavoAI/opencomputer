@@ -1578,6 +1578,7 @@ describe("managed agents proxy", () => {
       "slack_setup_connected",
       "slack_setup_busy",
       "slack_setup_cancelled",
+      "slack_manual_completion_blocked",
     ];
     const GENERIC_MESSAGES = [
       "The agent request could not be completed.",
@@ -1897,6 +1898,50 @@ describe("managed agents proxy", () => {
           message:
             "A Slack setup is already in progress for this agent and environment. Resume it instead of starting another.",
           setupId: "setup_9",
+        },
+      });
+    });
+
+    it("curates a blocked manual completion on the connection route", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          Response.json(
+            {
+              error: {
+                code: "slack_manual_completion_blocked",
+                message: "backend text with setup_private",
+              },
+            },
+            { status: 409 },
+          ),
+        ),
+      );
+
+      const response = await proxyManagedAgents(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/channels/slack/connections/channel_slack",
+          {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              appId: "A1",
+              signingSecret: "s",
+              botToken: "xoxb-1",
+            }),
+          },
+        ),
+        env,
+        caller,
+        "/api/managed-agents",
+      );
+
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({
+        error: {
+          code: "slack_manual_completion_blocked",
+          message:
+            "Manual completion is blocked: cancel the automated setup for this connection, then generate a new manifest (Reconnect) before entering credentials.",
         },
       });
     });

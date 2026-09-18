@@ -438,6 +438,18 @@ export type SlackSlot = {
 
 export const DEDICATED_SLACK_CHANNEL_ID = 'slack'
 
+/**
+ * The automated setup card's element id for a target, so the manual wizard
+ * can point at it when a manual completion is blocked by that setup.
+ */
+export function slackSetupAnchorId(target: {
+  agentId: string
+  alias: string
+  channelId?: string
+}): string {
+  return `slack-setup-${target.agentId}-${target.alias}-${target.channelId ?? DEDICATED_SLACK_CHANNEL_ID}`
+}
+
 export function slackSlotsForEnvironment(input: {
   project: ManagedProjectOverview['project']
   deployments: ManagedAgentDeployment[]
