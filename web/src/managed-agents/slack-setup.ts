@@ -161,6 +161,15 @@ function retryAfter(ms?: number) {
 export function describeSlackSetup(
   setup: ManagedSlackSetup | null | undefined,
 ): SlackSetupView {
+  if (setup?.error?.code === 'slack_setup_superseded') {
+    return {
+      title: 'This setup no longer owns the connection',
+      description:
+        'A manual connection or reconnect replaced it. Set up manually, or create a new bot.',
+      tone: 'error',
+      primary: { action: 'create', label: 'Create Slack bot' },
+    }
+  }
   if (setup?.phase === 'cancelled') {
     // The record carries what a cancellation leaves behind: possibly an app
     // in the workspace's app list, which the platform never deletes.
@@ -184,14 +193,6 @@ export function describeSlackSetup(
   }
   const name = setup.app?.name ?? setup.name
   const error = setup.error
-  if (error?.code === 'slack_setup_superseded') {
-    return {
-      title: 'This setup no longer owns the connection',
-      description:
-        'A manual connection or reconnect replaced it. Use Set up manually, or start again.',
-      tone: 'error',
-    }
-  }
   switch (setup.phase) {
     case 'prepared': {
       if (!error) {
@@ -227,8 +228,13 @@ export function describeSlackSetup(
         case 'slack_manifest_rejected':
           return {
             title: 'Slack rejected the app manifest',
-            description: `${error.message} Fix the channel declaration and redeploy, then Cancel this setup and create the bot again, or set it up manually.`,
+            description: `${error.message} Fix the channel declaration and redeploy, then ${
+              error.recoverable
+                ? 'submit a token again.'
+                : 'Cancel this setup and create the bot again, or set it up manually.'
+            }`,
             tone: 'error',
+            primary: retry,
           }
         case 'slack_app_limit_reached':
           return {

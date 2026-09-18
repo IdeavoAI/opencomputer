@@ -347,7 +347,7 @@ describe('setup copy', () => {
         setup({
           phase: 'app_created',
           app: { id: 'A1', name: 'Patch' },
-          actions: ['cancel'],
+          actions: ['manual'],
           error: {
             code: 'slack_setup_superseded',
             message: 'superseded',
@@ -356,7 +356,7 @@ describe('setup copy', () => {
           },
         }),
       ).primary,
-    ).toBeUndefined()
+    ).toEqual({ action: 'create', label: 'Create Slack bot' })
   })
 
   it('does not offer a retry for a rejected manifest, which needs a redeploy and a new setup', () => {
@@ -378,8 +378,33 @@ describe('setup copy', () => {
     expect(view.primary).toBeUndefined()
   })
 
-  it('reports a setup that lost its connection in any phase', () => {
-    for (const phase of ['app_created', 'exchanging', 'prepared'] as const) {
+  it('keeps the retry for a manifest rejection an older platform marks recoverable', () => {
+    const view = describeSlackSetup(
+      setup({
+        actions: ['create', 'cancel'],
+        error: {
+          code: 'slack_manifest_rejected',
+          message: 'Slack rejected the app manifest.',
+          recoverable: true,
+          at: '2026-09-18T08:00:00.000Z',
+        },
+      }),
+    )
+    expect(view.primary).toEqual({
+      action: 'create',
+      label: 'Try another token',
+    })
+    expect(view.description).toContain('redeploy')
+    expect(view.description).not.toContain('Cancel')
+  })
+
+  it('treats a setup that lost its connection like a cancelled one, in any phase', () => {
+    for (const phase of [
+      'connected',
+      'cancelled',
+      'app_created',
+      'prepared',
+    ] as const) {
       const view = describeSlackSetup(
         setup({
           phase,
@@ -393,7 +418,10 @@ describe('setup copy', () => {
         }),
       )
       expect(view.title, phase).toBe('This setup no longer owns the connection')
-      expect(view.primary, phase).toBeUndefined()
+      expect(view.primary, phase).toEqual({
+        action: 'create',
+        label: 'Create Slack bot',
+      })
     }
   })
 

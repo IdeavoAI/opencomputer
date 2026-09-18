@@ -500,13 +500,8 @@ describe('ManagedProjectSlack', () => {
           },
         }),
         title: 'This setup no longer owns the connection',
-        offered: ['Set up manually'],
-        withheld: [
-          'Authorize again',
-          'Authorize in Slack',
-          'Cancel setup',
-          'Create Slack bot',
-        ],
+        offered: ['Set up manually', 'Create Slack bot'],
+        withheld: ['Authorize again', 'Authorize in Slack', 'Cancel setup'],
         once: ['Set up manually'],
       },
       {
@@ -794,7 +789,10 @@ describe('ManagedProjectSlack', () => {
       () => document.body.textContent?.includes('authorize failed') ?? false,
       'the error',
     )
-    expect(text()).toContain('Approve its installation')
+    await settle(
+      () => text().includes('Approve its installation'),
+      'the created app on the row',
+    )
     await settle(
       () => api.findManagedSlackSetup.mock.calls.length > lookups,
       'the lookup to be refreshed',
@@ -1002,7 +1000,8 @@ describe('ManagedProjectSlack', () => {
       first.resolve(
         setup({
           requestKey: firstCall.requestKey,
-          name: 'Patch',
+          // The platform normalised the name; that is the intent from now on.
+          name: 'Patch Bot',
           error: {
             code: 'slack_configuration_token_invalid',
             message: 'invalid_auth',
@@ -1020,8 +1019,9 @@ describe('ManagedProjectSlack', () => {
         ) ?? false,
       'the rejection',
     )
+    expect(nameInput.value).toBe('Patch Bot')
     act(() => typeInto(nameInput, 'Other'))
-    expect(nameInput.value).toBe('Patch')
+    expect(nameInput.value).toBe('Patch Bot')
     api.startManagedSlackSetup.mockResolvedValueOnce(
       setup({
         requestKey: firstCall.requestKey,
@@ -1037,8 +1037,55 @@ describe('ManagedProjectSlack', () => {
     )
     expect(api.startManagedSlackSetup.mock.calls[1][0]).toMatchObject({
       requestKey: firstCall.requestKey,
-      name: 'Patch',
+      name: 'Patch Bot',
       configurationToken: 'xoxe.xoxp-second',
     })
+  })
+
+  it('offers a fresh setup on a superseded record, whether connected or cancelled', async () => {
+    for (const phase of ['connected', 'cancelled'] as const) {
+      client.clear()
+      api.findManagedSlackSetup.mockResolvedValue(
+        setup({
+          phase,
+          app: { id: 'A1', name: 'Patch' },
+          workspace: { id: 'T1', name: 'Acme' },
+          actions: ['manual'],
+          error: {
+            code: 'slack_setup_superseded',
+            message: 'superseded',
+            recoverable: false,
+            at: '2026-09-18T08:00:00.000Z',
+          },
+        }),
+      )
+      render()
+      await settle(
+        () => text().includes('This setup no longer owns the connection'),
+        `the ${phase} superseded note`,
+      )
+      const offered = buttons(container)
+      expect(offered, phase).toContain('Create Slack bot')
+      expect(
+        offered.filter((label) => label === 'Set up manually'),
+        phase,
+      ).toHaveLength(1)
+      expect(offered, phase).not.toContain('Cancel setup')
+      expect(offered, phase).not.toContain('Authorize in Slack')
+      expect(text(), phase).not.toContain('Slack app installed')
+
+      act(() => button(container, 'Create Slack bot').click())
+      await settle(
+        () => document.body.querySelector('#managed-slack-setup-name') !== null,
+        'the dialog',
+      )
+      const nameInput = document.body.querySelector(
+        '#managed-slack-setup-name',
+      ) as HTMLInputElement
+      expect(nameInput.readOnly, phase).toBe(false)
+      act(() => root.unmount())
+      root = createRoot(container)
+      document.body.replaceChildren(container)
+    }
   })
 })

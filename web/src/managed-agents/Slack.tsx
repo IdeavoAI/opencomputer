@@ -358,8 +358,11 @@ function SlackAutomaticSetup({
   })
   // The lookup answers the latest non-cancelled setup, so after Disconnect it
   // is the old connected one: that is history, and a new setup starts fresh.
+  const superseded = (record: ManagedSlackSetup | null | undefined) =>
+    record?.error?.code === 'slack_setup_superseded'
   const setup =
-    connected || setupQuery.data?.phase === 'connected'
+    connected ||
+    (setupQuery.data?.phase === 'connected' && !superseded(setupQuery.data))
       ? undefined
       : setupQuery.data
   const highlighted =
@@ -470,7 +473,10 @@ function SlackAutomaticSetup({
   const view = describeSlackSetup(setup)
   // A cancelled record is shown for its message only; a new setup starts
   // fresh, with its own request key.
-  const resumable = setup && setup.phase !== 'cancelled' ? setup : undefined
+  const resumable =
+    setup && setup.phase !== 'cancelled' && !superseded(setup)
+      ? setup
+      : undefined
   const actions = resumable?.actions ?? ['create']
   const busy = view.tone === 'pending' || setupQuery.isLoading
   const showCreate =
@@ -658,7 +664,9 @@ function SlackSetupDialog({
       return result
     },
     onSuccess: (result) => {
+      // The platform may normalise the name; show what retries will send.
       intentName.current = result.name
+      setName(result.name)
       if (result.phase === 'prepared' && result.error?.recoverable) {
         // An explicit rejection with no side effect: fix the token, same key.
         setOutcome(result)
