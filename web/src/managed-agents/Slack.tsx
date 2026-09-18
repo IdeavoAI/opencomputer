@@ -216,7 +216,7 @@ export function ManagedProjectSlack({
       ) : (
         slots.map((slot) => (
           <SlackSlotRow
-            key={slot.key}
+            key={`${projectId}:${environment}:${slot.key}`}
             slot={slot}
             environment={environment}
             agentNames={agentNames}
@@ -339,7 +339,12 @@ function SlackAutomaticSetup({
   const connection = slot.connection
   const connected = connection?.status === 'connected'
   const [dialogOpen, setDialogOpen] = useState(false)
-  const [confirmCancel, setConfirmCancel] = useState(false)
+  // The confirmation names the setup it was opened for, in the environment
+  // it was opened in; it never cancels whatever is current when confirmed.
+  const [cancelTarget, setCancelTarget] = useState<{
+    setupId: string
+    environment: Environment
+  }>()
 
   const setupQuery = useQuery({
     queryKey,
@@ -393,7 +398,7 @@ function SlackAutomaticSetup({
   const cancel = useMutation({
     mutationFn: (setupId: string) => cancelManagedSlackSetup(setupId),
     onSuccess: (cancelled) => {
-      setConfirmCancel(false)
+      setCancelTarget(undefined)
       // The cancelled record stays on screen with the platform's message
       // until the next lookup, which answers only non-cancelled setups.
       queryClient.setQueryData(queryKey, cancelled)
@@ -548,7 +553,9 @@ function SlackAutomaticSetup({
             <Button
               size="sm"
               variant="ghost"
-              onClick={() => setConfirmCancel(true)}
+              onClick={() =>
+                setCancelTarget({ setupId: resumable.id, environment })
+              }
             >
               Cancel setup
             </Button>
@@ -571,15 +578,21 @@ function SlackAutomaticSetup({
       ) : null}
 
       <ConfirmDialog
-        open={confirmCancel}
-        onOpenChange={setConfirmCancel}
+        open={Boolean(cancelTarget)}
+        onOpenChange={(open) => {
+          if (!open) setCancelTarget(undefined)
+        }}
         title="Cancel Slack setup?"
         description="The setup is removed from OpenComputer. If Slack already created the app, it stays in your Slack app list; delete it there if you do not need it."
         confirmLabel="Cancel setup"
         cancelLabel="Keep"
         destructive
         pending={cancel.isPending}
-        onConfirm={() => resumable && cancel.mutate(resumable.id)}
+        onConfirm={() => {
+          if (cancelTarget && cancelTarget.environment === environment) {
+            cancel.mutate(cancelTarget.setupId)
+          }
+        }}
       />
     </div>
   )
@@ -610,7 +623,10 @@ function SlackSetupDialog({
   const [requestKey] = useState(
     () => setup?.requestKey ?? newSlackSetupRequestKey(),
   )
-  const resuming = Boolean(setup)
+  // The name the request key was first used with; retries send it (the
+  // persisted setup's name once the platform has answered), never an edit.
+  const intentName = useRef(setup?.name)
+  const [nameFrozen, setNameFrozen] = useState(Boolean(setup))
   const [name, setName] = useState(defaultName)
   const [token, setToken] = useState('')
   const [outcome, setOutcome] = useState<ManagedSlackSetup>()
@@ -629,7 +645,7 @@ function SlackSetupDialog({
       tokenRef.current = ''
       const result = await startManagedSlackSetup({
         ...target,
-        name: name.trim(),
+        name: intentName.current ?? name.trim(),
         requestKey,
         configurationToken,
       })
@@ -642,11 +658,13 @@ function SlackSetupDialog({
       return result
     },
     onSuccess: (result) => {
-      if (result.phase === 'prepared') {
+      intentName.current = result.name
+      if (result.phase === 'prepared' && result.error?.recoverable) {
         // An explicit rejection with no side effect: fix the token, same key.
         setOutcome(result)
         return
       }
+      // Anything else is shown by the panel from the platform's record.
       onClose()
     },
     onError: (error) => {
@@ -682,8 +700,17 @@ function SlackSetupDialog({
 
   const submit = (event: FormEvent) => {
     event.preventDefault()
-    if (inFlight.current || !name.trim() || !token.trim()) return
+    if (
+      inFlight.current ||
+      !(intentName.current ?? name).trim() ||
+      !token.trim()
+    )
+      return
     inFlight.current = true
+    if (intentName.current === undefined) {
+      intentName.current = name.trim()
+      setNameFrozen(true)
+    }
     tokenRef.current = token.trim()
     setOutcome(undefined)
     setSubmitError(undefined)
@@ -715,8 +742,8 @@ function SlackSetupDialog({
             label="Bot name"
             htmlFor="managed-slack-setup-name"
             description={
-              resuming
-                ? 'This setup already has a name. Cancel it to start over with another.'
+              nameFrozen
+                ? 'The name is fixed once submitted. Cancel the setup to start over with another.'
                 : 'What people will see in Slack.'
             }
           >
@@ -724,8 +751,10 @@ function SlackSetupDialog({
               id="managed-slack-setup-name"
               value={name}
               maxLength={35}
-              readOnly={resuming}
-              onChange={(event) => setName(event.target.value)}
+              readOnly={nameFrozen}
+              onChange={(event) => {
+                if (!nameFrozen) setName(event.target.value)
+              }}
             />
           </Field>
           <Field

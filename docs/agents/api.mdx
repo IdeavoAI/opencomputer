@@ -549,14 +549,14 @@ Error codes, as HTTP errors or as `error.code` on the setup:
 | `slack_setup_busy` | `409` on cancel: the setup is creating or exchanging; wait for it to finish |
 | `slack_setup_cancelled` | Recorded on a setup cancelled after the app was created or its creation was uncertain: the Slack app may still appear in the workspace's app list and can be removed there |
 | `slack_configuration_token_invalid`, `slack_configuration_token_expired` | The token was rejected; generate a new one and submit it with the same key |
-| `slack_manifest_rejected` | Slack rejected the generated app configuration; `pointer` names the field |
+| `slack_manifest_rejected` | Slack rejected the generated app configuration; `pointer` names the field. Not recoverable in place: fix the declaration, redeploy, cancel the setup and start again |
 | `slack_app_limit_reached` | The workspace cannot hold another app |
 | `slack_rate_limited` | Wait `retryAfterMs` and submit again |
 | `slack_provider_unavailable` | Slack declined with an unexpected error when creating the app, or did not answer during installation; submit or authorize again |
 | `slack_creation_uncertain` | See phase `creation_uncertain` |
 | `slack_exchange_failed`, `slack_exchange_uncertain`, `slack_authorization_denied`, `slack_authorization_expired` | The installation did not complete; authorize again |
 | `slack_app_mismatch`, `slack_workspace_mismatch`, `slack_scope_missing`, `slack_enterprise_install_unsupported` | The installation did not match the created app, its established workspace or its declared scopes; authorize again and approve that app in a single workspace |
-| `slack_setup_superseded` | A manual connection or reconnect completed first |
+| `slack_setup_superseded` | The setup lost ownership of its connection to a manual connection or reconnect; set up manually or start again |
 
 The authorization URL opens Slack's consent page for the created app and is
 valid for ten minutes; authorizing again issues a new one. Slack sends the

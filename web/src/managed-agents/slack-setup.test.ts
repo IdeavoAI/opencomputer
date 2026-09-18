@@ -359,6 +359,44 @@ describe('setup copy', () => {
     ).toBeUndefined()
   })
 
+  it('does not offer a retry for a rejected manifest, which needs a redeploy and a new setup', () => {
+    const view = describeSlackSetup(
+      setup({
+        actions: ['cancel', 'manual'],
+        error: {
+          code: 'slack_manifest_rejected',
+          message: 'Slack rejected the app manifest.',
+          recoverable: false,
+          pointer: '/oauth_config/scopes/bot',
+          at: '2026-09-18T08:00:00.000Z',
+        },
+      }),
+    )
+    expect(view.title).toBe('Slack rejected the app manifest')
+    expect(view.description).toContain('redeploy')
+    expect(view.description).toContain('Cancel')
+    expect(view.primary).toBeUndefined()
+  })
+
+  it('reports a setup that lost its connection in any phase', () => {
+    for (const phase of ['app_created', 'exchanging', 'prepared'] as const) {
+      const view = describeSlackSetup(
+        setup({
+          phase,
+          actions: ['manual'],
+          error: {
+            code: 'slack_setup_superseded',
+            message: 'superseded',
+            recoverable: false,
+            at: '2026-09-18T08:00:00.000Z',
+          },
+        }),
+      )
+      expect(view.title, phase).toBe('This setup no longer owns the connection')
+      expect(view.primary, phase).toBeUndefined()
+    }
+  })
+
   it('shows the platform message on a cancelled setup and offers a fresh start', () => {
     const message =
       "This Slack setup was cancelled. The Slack app may still appear in your workspace's app list and can be removed there."

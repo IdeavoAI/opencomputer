@@ -48,6 +48,12 @@ const project = {
         activeDeploymentId: 'dep_coder',
         updatedAt: '2026-09-17T00:00:00.000Z',
       },
+      {
+        name: 'production',
+        agentId: 'coder',
+        activeDeploymentId: 'dep_coder_production',
+        updatedAt: '2026-09-17T00:00:00.000Z',
+      },
     ],
     agents: [{ id: 'coder', name: 'Coder' }],
     createdAt: '2026-09-17T00:00:00.000Z',
@@ -199,12 +205,13 @@ describe('ManagedProjectSlack', () => {
 
   function render(
     path = '/projects/prj_1/connections?environment=development',
+    environment: 'development' | 'production' = 'development',
   ) {
     act(() => {
       root.render(
         <QueryClientProvider client={client}>
           <MemoryRouter initialEntries={[path]}>
-            <ManagedProjectSlack projectId="prj_1" environment="development" />
+            <ManagedProjectSlack projectId="prj_1" environment={environment} />
             <LocationProbe />
           </MemoryRouter>
         </QueryClientProvider>,
@@ -389,6 +396,22 @@ describe('ManagedProjectSlack', () => {
         withheld: ['Authorize in Slack', 'Retry'],
       },
       {
+        setup: setup({
+          actions: ['cancel', 'manual'],
+          error: {
+            code: 'slack_manifest_rejected',
+            message: 'Slack rejected the app manifest.',
+            recoverable: false,
+            pointer: '/oauth_config/scopes/bot',
+            at: '2026-09-17T00:00:00.000Z',
+          },
+        }),
+        title: 'Slack rejected the app manifest',
+        offered: ['Cancel setup', 'Set up manually'],
+        withheld: ['Try another token', 'Create Slack bot', 'Retry'],
+        once: ['Set up manually'],
+      },
+      {
         setup: setup({ phase: 'creating', actions: [] }),
         title: 'Creating the Slack app…',
         offered: [],
@@ -468,7 +491,7 @@ describe('ManagedProjectSlack', () => {
         setup: setup({
           phase: 'app_created',
           app: { id: 'A1', name: 'Patch' },
-          actions: ['cancel'],
+          actions: ['manual'],
           error: {
             code: 'slack_setup_superseded',
             message: 'superseded',
@@ -476,9 +499,15 @@ describe('ManagedProjectSlack', () => {
             at: '2026-09-17T00:00:00.000Z',
           },
         }),
-        title: 'Another connection change completed first',
-        offered: ['Cancel setup'],
-        withheld: ['Authorize again', 'Authorize in Slack'],
+        title: 'This setup no longer owns the connection',
+        offered: ['Set up manually'],
+        withheld: [
+          'Authorize again',
+          'Authorize in Slack',
+          'Cancel setup',
+          'Create Slack bot',
+        ],
+        once: ['Set up manually'],
       },
       {
         setup: setup({ phase: 'exchanging', actions: [] }),
@@ -875,5 +904,141 @@ describe('ManagedProjectSlack', () => {
     expect(buttons(container)).toContain('Create Slack bot')
     expect(buttons(container)).not.toContain('Authorize in Slack')
     expect(buttons(container)).not.toContain('Cancel setup')
+  })
+
+  it('drops a cancellation confirmation when the environment changes', async () => {
+    api.findManagedSlackSetup.mockImplementation(
+      (target: { alias: 'development' | 'production' }) =>
+        Promise.resolve(
+          setup({
+            id: `setup_${target.alias}`,
+            alias: target.alias,
+            phase: 'app_created',
+            app: { id: 'A1', name: 'Patch' },
+            actions: ['authorize', 'cancel'],
+          }),
+        ),
+    )
+    api.cancelManagedSlackSetup.mockResolvedValue(
+      setup({ phase: 'cancelled', actions: [] }),
+    )
+    // Both environments were visited before: nothing loads in between.
+    client.setQueryData(
+      ['managed-agent-deployment', 'dep_coder_production'],
+      dedicatedDeployment,
+    )
+    client.setQueryData(
+      ['managed-agent-deployment', 'dep_coder'],
+      dedicatedDeployment,
+    )
+    render(undefined, 'development')
+    await settle(
+      () => buttons(container).includes('Cancel setup'),
+      'development',
+    )
+    act(() => button(container, 'Cancel setup').click())
+    await settle(
+      () => document.body.querySelector('[role="alertdialog"]') !== null,
+      'the confirmation',
+    )
+
+    // Back navigation to the other environment: same panel, new scope.
+    render(undefined, 'production')
+    await settle(
+      () =>
+        api.findManagedSlackSetup.mock.calls.some(
+          (call: unknown[]) =>
+            (call[0] as { alias: string }).alias === 'production',
+        ),
+      'the production lookup',
+    )
+    await settle(
+      () => buttons(container).includes('Cancel setup'),
+      'production',
+    )
+    const stale = document.body.querySelector('[role="alertdialog"]')
+    if (stale) act(() => button(stale as HTMLElement, 'Cancel setup').click())
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(document.body.querySelector('[role="alertdialog"]')).toBeNull()
+    expect(api.cancelManagedSlackSetup).not.toHaveBeenCalled()
+  })
+
+  it('freezes the bot name once a request key has been used', async () => {
+    render()
+    await settle(() => text().includes('Create Slack bot'), 'the slot')
+    act(() => button(container, 'Create Slack bot').click())
+    await settle(
+      () => document.body.querySelector('#managed-slack-setup-token') !== null,
+      'the dialog',
+    )
+    const tokenInput = document.body.querySelector(
+      '#managed-slack-setup-token',
+    ) as HTMLInputElement
+    const nameInput = document.body.querySelector(
+      '#managed-slack-setup-name',
+    ) as HTMLInputElement
+    const dialog = tokenInput.closest('[role="dialog"]') as HTMLElement
+    act(() => typeInto(nameInput, 'Patch'))
+    act(() => typeInto(tokenInput, 'xoxe.xoxp-first'))
+    const first = deferred<ManagedSlackSetup>()
+    api.startManagedSlackSetup.mockReturnValueOnce(first.promise)
+    act(() => button(dialog, 'Create Slack bot').click())
+    await settle(
+      () => api.startManagedSlackSetup.mock.calls.length === 1,
+      'the first submit',
+    )
+    // The intent is fixed from here on: an edit attempt changes nothing.
+    act(() => typeInto(nameInput, 'Patched'))
+    expect(nameInput.value).toBe('Patch')
+    expect(nameInput.readOnly).toBe(true)
+
+    const firstCall = api.startManagedSlackSetup.mock.calls[0][0] as {
+      requestKey: string
+      name: string
+    }
+    await act(async () => {
+      first.resolve(
+        setup({
+          requestKey: firstCall.requestKey,
+          name: 'Patch',
+          error: {
+            code: 'slack_configuration_token_invalid',
+            message: 'invalid_auth',
+            recoverable: true,
+            at: '2026-09-17T00:01:00.000Z',
+          },
+        }),
+      )
+      await first.promise
+    })
+    await settle(
+      () =>
+        dialog.textContent?.includes(
+          'Slack rejected the configuration token',
+        ) ?? false,
+      'the rejection',
+    )
+    act(() => typeInto(nameInput, 'Other'))
+    expect(nameInput.value).toBe('Patch')
+    api.startManagedSlackSetup.mockResolvedValueOnce(
+      setup({
+        requestKey: firstCall.requestKey,
+        phase: 'creating',
+        actions: [],
+      }),
+    )
+    act(() => typeInto(tokenInput, 'xoxe.xoxp-second'))
+    act(() => button(dialog, 'Try another token').click())
+    await settle(
+      () => api.startManagedSlackSetup.mock.calls.length === 2,
+      'the retry',
+    )
+    expect(api.startManagedSlackSetup.mock.calls[1][0]).toMatchObject({
+      requestKey: firstCall.requestKey,
+      name: 'Patch',
+      configurationToken: 'xoxe.xoxp-second',
+    })
   })
 })

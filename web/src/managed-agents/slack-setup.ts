@@ -184,6 +184,14 @@ export function describeSlackSetup(
   }
   const name = setup.app?.name ?? setup.name
   const error = setup.error
+  if (error?.code === 'slack_setup_superseded') {
+    return {
+      title: 'This setup no longer owns the connection',
+      description:
+        'A manual connection or reconnect replaced it. Use Set up manually, or start again.',
+      tone: 'error',
+    }
+  }
   switch (setup.phase) {
     case 'prepared': {
       if (!error) {
@@ -194,7 +202,11 @@ export function describeSlackSetup(
           primary: { action: 'create', label: 'Create Slack bot' },
         }
       }
-      const retry = { action: 'create', label: 'Try another token' } as const
+      // Only an explicit rejection with no side effect is retried with a
+      // new token; anything the platform marks unrecoverable is not.
+      const retry = error.recoverable
+        ? ({ action: 'create', label: 'Try another token' } as const)
+        : undefined
       switch (error.code) {
         case 'slack_configuration_token_invalid':
           return {
@@ -215,9 +227,8 @@ export function describeSlackSetup(
         case 'slack_manifest_rejected':
           return {
             title: 'Slack rejected the app manifest',
-            description: `${error.message} Check the channel's declared scopes and events, redeploy, then submit a token again.`,
+            description: `${error.message} Fix the channel declaration and redeploy, then Cancel this setup and create the bot again, or set it up manually.`,
             tone: 'error',
-            primary: retry,
           }
         case 'slack_app_limit_reached':
           return {
@@ -338,13 +349,6 @@ export function describeSlackSetup(
               'Authorize again and install the app into a single workspace.',
             tone: 'error',
             primary: authorize,
-          }
-        case 'slack_setup_superseded':
-          return {
-            title: 'Another connection change completed first',
-            description:
-              'A manual connection or reconnect won while this app was being installed. This setup is no longer needed; check the current connection.',
-            tone: 'error',
           }
         default:
           return {

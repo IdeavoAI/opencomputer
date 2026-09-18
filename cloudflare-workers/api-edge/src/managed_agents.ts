@@ -174,7 +174,7 @@ const SLACK_SETUP_ERROR_MESSAGES: Record<string, string> = {
   slack_enterprise_install_unsupported:
     "Organization-wide Slack installations are not supported. Install the app into a single workspace.",
   slack_setup_superseded:
-    "Another Slack connection change completed first. Check the current connection.",
+    "This setup no longer owns the connection. Use Set up manually or start again.",
 };
 
 async function publicErrorResponse(upstream: Response): Promise<Response> {
