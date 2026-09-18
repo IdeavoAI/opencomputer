@@ -100,6 +100,31 @@ function SlackDestinationSetup({
   )
 }
 
+/** A platform refusal shown where the person is, with its way forward. */
+function WizardNotice({
+  message,
+  children,
+}: {
+  message: string
+  children?: ReactNode
+}) {
+  return (
+    <div
+      role="alert"
+      className="bg-status-error-bg/30 space-y-2 rounded-md px-3 py-2"
+    >
+      <div className="flex items-start gap-2">
+        <TriangleAlert
+          className="text-status-error mt-0.5 size-4 shrink-0"
+          aria-hidden
+        />
+        <p className="text-sm">{message}</p>
+      </div>
+      {children}
+    </div>
+  )
+}
+
 function WizardSteps({ current, steps }: { current: number; steps: string[] }) {
   return (
     <ol className="flex items-center gap-2 pt-2">
@@ -181,8 +206,23 @@ export function ManagedSlackWizard({
   // The platform's reason a manual save is refused while an automated setup
   // owns this connection or the pasted manifest is stale.
   const [blocked, setBlocked] = useState<string>()
+  // The connection changed under this request (the automated flow may have
+  // connected it): what the page knows is stale and is re-read.
+  const [changed, setChanged] = useState<string>()
   const setupAnchor = slackSetupAnchorId({ agentId, alias, channelId })
   const setupOnPage = Boolean(blocked && document.getElementById(setupAnchor))
+  const connectionChanged = (error: unknown) => {
+    if (
+      !(error instanceof ApiError) ||
+      error.type !== 'slack_connection_changed'
+    ) {
+      return false
+    }
+    setChanged(error.message)
+    void queryClient.invalidateQueries({ queryKey: ['managed-agent-channels'] })
+    void queryClient.invalidateQueries({ queryKey: ['managed-slack-setup'] })
+    return true
+  }
 
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: ['managed-agent-channels'] })
@@ -199,7 +239,10 @@ export function ManagedSlackWizard({
       setManifest(result)
       void invalidate()
     },
-    onError: (error) => notifyError("Couldn't prepare the Slack app.", error),
+    onError: (error) => {
+      if (connectionChanged(error)) return
+      notifyError("Couldn't prepare the Slack app.", error)
+    },
   })
   const complete = useMutation({
     mutationFn: () => {
@@ -219,6 +262,7 @@ export function ManagedSlackWizard({
       void invalidate()
     },
     onError: (error) => {
+      if (connectionChanged(error)) return
       if (
         error instanceof ApiError &&
         error.type === 'slack_manual_completion_blocked'
@@ -240,6 +284,7 @@ export function ManagedSlackWizard({
 
   const reset = () => {
     setBlocked(undefined)
+    setChanged(undefined)
     setStep('create')
     setEditing(false)
     setManifest(undefined)
@@ -465,6 +510,7 @@ export function ManagedSlackWizard({
                   </pre>
                 </>
               )}
+              {changed ? <WizardNotice message={changed} /> : null}
               <DialogFooter>
                 <Button variant="ghost" onClick={() => setOpen(false)}>
                   Cancel
@@ -542,18 +588,9 @@ export function ManagedSlackWizard({
                   placeholder="xoxb-…"
                 />
               </Field>
+              {changed ? <WizardNotice message={changed} /> : null}
               {blocked ? (
-                <div
-                  role="alert"
-                  className="bg-status-error-bg/30 space-y-2 rounded-md px-3 py-2"
-                >
-                  <div className="flex items-start gap-2">
-                    <TriangleAlert
-                      className="text-status-error mt-0.5 size-4 shrink-0"
-                      aria-hidden
-                    />
-                    <p className="text-sm">{blocked}</p>
-                  </div>
+                <WizardNotice message={blocked}>
                   {setupOnPage ? (
                     <Button
                       type="button"
@@ -568,7 +605,7 @@ export function ManagedSlackWizard({
                       <Link to={connectionsHref}>Open Connections</Link>
                     </Button>
                   ) : null}
-                </div>
+                </WizardNotice>
               ) : null}
               <DialogFooter>
                 <Button

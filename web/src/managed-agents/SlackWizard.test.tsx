@@ -22,6 +22,8 @@ const { ManagedSlackWizard } = await import('./SlackWizard')
 
 const BLOCKED =
   'Manual completion is blocked: cancel the automated setup for this connection, then generate a new manifest (Reconnect) before entering credentials.'
+const CHANGED =
+  'This connection changed while the request was in flight. Reload the page to see its current state before trying again.'
 
 // A connection whose events are rejected: the wizard offers Edit credentials,
 // which starts at the details step without a manifest round trip.
@@ -99,7 +101,11 @@ describe('ManagedSlackWizard blocked manual completion', () => {
     document.body.replaceChildren()
   })
 
-  function render(connectionsHref?: string) {
+  // `null` renders the wizard with no connection at all.
+  function render(
+    connectionsHref?: string,
+    current: ManagedAgentChannel | null = connection,
+  ) {
     act(() => {
       root.render(
         <QueryClientProvider client={client}>
@@ -108,7 +114,7 @@ describe('ManagedSlackWizard blocked manual completion', () => {
               agentId="coder"
               alias="development"
               agentName="Coder"
-              connection={connection}
+              connection={current ?? undefined}
               connectionsHref={connectionsHref}
             />
           </MemoryRouter>
@@ -190,5 +196,34 @@ describe('ManagedSlackWizard blocked manual completion', () => {
         (element) => element.textContent?.trim() === 'Show the automated setup',
       ),
     ).toBe(false)
+  })
+
+  it('shows a connection that changed under the manual create and refreshes what the page knows', async () => {
+    api.startManagedAgentSlack.mockReset()
+    api.startManagedAgentSlack.mockRejectedValue(
+      new ApiError(CHANGED, 409, 'slack_connection_changed'),
+    )
+    const invalidate = vi.spyOn(client, 'invalidateQueries')
+    render(undefined, null)
+
+    act(() => button(container, 'Connect Slack').click())
+    await settle(
+      () => document.body.querySelector('#managed-slack-app-name') !== null,
+      'the create step',
+    )
+    act(() => button(document.body, 'Generate Slack manifest').click())
+    await settle(
+      () => document.body.querySelector('[role="alert"]') !== null,
+      'the changed state',
+    )
+    expect(api.startManagedAgentSlack).toHaveBeenCalledTimes(1)
+    const alert = document.body.querySelector('[role="alert"]') as HTMLElement
+    expect(alert.textContent).toContain(CHANGED)
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ['managed-agent-channels'],
+    })
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ['managed-slack-setup'],
+    })
   })
 })

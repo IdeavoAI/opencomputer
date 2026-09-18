@@ -1579,6 +1579,7 @@ describe("managed agents proxy", () => {
       "slack_setup_busy",
       "slack_setup_cancelled",
       "slack_manual_completion_blocked",
+      "slack_connection_changed",
     ];
     const GENERIC_MESSAGES = [
       "The agent request could not be completed.",
@@ -1898,6 +1899,46 @@ describe("managed agents proxy", () => {
           message:
             "A Slack setup is already in progress for this agent and environment. Resume it instead of starting another.",
           setupId: "setup_9",
+        },
+      });
+    });
+
+    it("curates a connection that changed under the manual create route", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          Response.json(
+            {
+              error: {
+                code: "slack_connection_changed",
+                message: "backend text with generation 7",
+              },
+            },
+            { status: 409 },
+          ),
+        ),
+      );
+
+      const response = await proxyManagedAgents(
+        new Request(
+          "https://app.opencomputer.dev/api/managed-agents/channels/slack/connections",
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ agentId: "coder@development", name: "Patch" }),
+          },
+        ),
+        env,
+        caller,
+        "/api/managed-agents",
+      );
+
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({
+        error: {
+          code: "slack_connection_changed",
+          message:
+            "This connection changed while the request was in flight. Reload the page to see its current state before trying again.",
         },
       });
     });

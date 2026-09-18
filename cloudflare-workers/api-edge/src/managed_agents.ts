@@ -163,6 +163,8 @@ const SLACK_SETUP_ERROR_MESSAGES: Record<string, string> = {
     "This Slack setup was cancelled. The Slack app may still appear in your workspace's app list and can be removed there.",
   slack_manual_completion_blocked:
     "Manual completion is blocked: cancel the automated setup for this connection, then generate a new manifest (Reconnect) before entering credentials.",
+  slack_connection_changed:
+    "This connection changed while the request was in flight. Reload the page to see its current state before trying again.",
   slack_authorization_denied:
     "The Slack installation was declined. Authorize the app again when you are ready.",
   slack_authorization_expired:
