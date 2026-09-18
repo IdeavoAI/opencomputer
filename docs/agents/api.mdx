@@ -540,7 +540,7 @@ Error codes, as HTTP errors or as `error.code` on the setup:
 | Code | Meaning |
 | --- | --- |
 | `slack_setup_conflict` | The request key was already used with a different target or name |
-| `slack_setup_active` | Another setup is in progress for the target; `error.setupId` names it, and finding it by target returns the same record |
+| `slack_setup_active` | Another setup is in progress for the target; `error.setupId` names it, and finding it by target returns the same record. Also answered by the manual create or reconnect (`POST /channels/slack/connections`) while an automated setup works on the target |
 | `slack_already_connected` | The target already has a connected app; disconnect it first |
 | `slack_setup_unavailable` | Automatic setup is not available; use manual setup |
 | `slack_setup_not_found` | `404`: no setup with that id in this project |
@@ -549,7 +549,6 @@ Error codes, as HTTP errors or as `error.code` on the setup:
 | `slack_setup_busy` | `409` on cancel: the setup is creating or exchanging; wait for it to finish |
 | `slack_setup_cancelled` | Recorded on a setup cancelled after the app was created or its creation was uncertain: the Slack app may still appear in the workspace's app list and can be removed there |
 | `slack_manual_completion_blocked` | `409` on the manual credential save (`PUT /channels/slack/connections/<id>`): an automated setup owns the connection, or the pasted manifest is no longer current; cancel the setup, generate a new manifest, then enter credentials |
-| `slack_connection_changed` | `409` on the manual create or reconnect (`POST /channels/slack/connections`): the connection changed while the request was in flight, for example the automated setup connected it; reload before trying again |
 | `slack_configuration_token_invalid`, `slack_configuration_token_expired` | The token was rejected; generate a new one and submit it with the same key |
 | `slack_manifest_rejected` | Slack rejected the generated app configuration; `pointer` names the field. Not recoverable in place: fix the declaration, redeploy, cancel the setup and start again |
 | `slack_app_limit_reached` | The workspace cannot hold another app |

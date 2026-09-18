@@ -24,6 +24,8 @@ const BLOCKED =
   'Manual completion is blocked: cancel the automated setup for this connection, then generate a new manifest (Reconnect) before entering credentials.'
 const CHANGED =
   'This connection changed while the request was in flight. Reload the page to see its current state before trying again.'
+const ACTIVE =
+  'A Slack setup is already in progress for this agent and environment. Resume it instead of starting another.'
 
 // A connection whose events are rejected: the wizard offers Edit credentials,
 // which starts at the details step without a manifest round trip.
@@ -225,5 +227,70 @@ describe('ManagedSlackWizard blocked manual completion', () => {
     expect(invalidate).toHaveBeenCalledWith({
       queryKey: ['managed-slack-setup'],
     })
+  })
+
+  it('shows an active automated setup inline on the manifest step and the credential step, pointing at its card', async () => {
+    const active = () =>
+      new ApiError(ACTIVE, 409, 'slack_setup_active', { setupId: 'setup_9' })
+    const anchor = document.createElement('div')
+    anchor.id = slackSetupAnchorId({
+      agentId: 'coder',
+      alias: 'development',
+      channelId: undefined,
+    })
+    const scrollIntoView = vi.fn()
+    anchor.scrollIntoView = scrollIntoView
+    document.body.append(anchor)
+    const invalidate = vi.spyOn(client, 'invalidateQueries')
+
+    // Manifest step, no connection yet.
+    api.startManagedAgentSlack.mockReset()
+    api.startManagedAgentSlack.mockRejectedValue(active())
+    render(undefined, null)
+    act(() => button(container, 'Connect Slack').click())
+    await settle(
+      () => document.body.querySelector('#managed-slack-app-name') !== null,
+      'the create step',
+    )
+    act(() => button(document.body, 'Generate Slack manifest').click())
+    await settle(
+      () => document.body.querySelector('[role="alert"]') !== null,
+      'the active notice on the manifest step',
+    )
+    let alert = document.body.querySelector('[role="alert"]') as HTMLElement
+    expect(alert.textContent).toContain(ACTIVE)
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ['managed-agent-channels'],
+    })
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ['managed-slack-setup'],
+    })
+    act(() => button(alert, 'Show the automated setup').click())
+    await settle(
+      () => document.body.querySelector('#managed-slack-app-name') === null,
+      'the dialog to close',
+    )
+    expect(scrollIntoView).toHaveBeenCalledTimes(1)
+
+    // Credential step, pending connection.
+    act(() => root.unmount())
+    root = createRoot(container)
+    document.body.replaceChildren(container, anchor)
+    invalidate.mockClear()
+    api.completeManagedAgentSlack.mockReset()
+    api.completeManagedAgentSlack.mockRejectedValue(active())
+    render()
+    await saveCredentials()
+    alert = document.body.querySelector('[role="alert"]') as HTMLElement
+    expect(alert.textContent).toContain(ACTIVE)
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ['managed-slack-setup'],
+    })
+    act(() => button(alert, 'Show the automated setup').click())
+    await settle(
+      () => document.body.querySelector('#managed-slack-token') === null,
+      'the dialog to close',
+    )
+    expect(scrollIntoView).toHaveBeenCalledTimes(2)
   })
 })

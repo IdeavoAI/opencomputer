@@ -205,23 +205,40 @@ export function ManagedSlackWizard({
   const [copied, markCopied] = useTransientFlag(1500)
   // The platform's reason a manual save is refused while an automated setup
   // owns this connection or the pasted manifest is stale.
-  const [blocked, setBlocked] = useState<string>()
-  // The connection changed under this request (the automated flow may have
-  // connected it): what the page knows is stale and is re-read.
-  const [changed, setChanged] = useState<string>()
+  // A platform refusal the person can act on from here: an automated setup
+  // already working on this target (resume it on its card), a manual
+  // completion that setup blocks, or a connection that changed under the
+  // request. The first and last make what the page knows stale; it is
+  // re-read.
+  const [notice, setNotice] = useState<{
+    message: string
+    pointToSetup: boolean
+  }>()
   const setupAnchor = slackSetupAnchorId({ agentId, alias, channelId })
-  const setupOnPage = Boolean(blocked && document.getElementById(setupAnchor))
-  const connectionChanged = (error: unknown) => {
-    if (
-      !(error instanceof ApiError) ||
-      error.type !== 'slack_connection_changed'
-    ) {
-      return false
-    }
-    setChanged(error.message)
+  const setupOnPage = Boolean(
+    notice?.pointToSetup && document.getElementById(setupAnchor),
+  )
+  const reread = () => {
     void queryClient.invalidateQueries({ queryKey: ['managed-agent-channels'] })
     void queryClient.invalidateQueries({ queryKey: ['managed-slack-setup'] })
-    return true
+  }
+  const refusal = (error: unknown) => {
+    if (!(error instanceof ApiError)) return false
+    switch (error.type) {
+      case 'slack_setup_active':
+        reread()
+        setNotice({ message: error.message, pointToSetup: true })
+        return true
+      case 'slack_manual_completion_blocked':
+        setNotice({ message: error.message, pointToSetup: true })
+        return true
+      case 'slack_connection_changed':
+        reread()
+        setNotice({ message: error.message, pointToSetup: false })
+        return true
+      default:
+        return false
+    }
   }
 
   const invalidate = () =>
@@ -240,7 +257,7 @@ export function ManagedSlackWizard({
       void invalidate()
     },
     onError: (error) => {
-      if (connectionChanged(error)) return
+      if (refusal(error)) return
       notifyError("Couldn't prepare the Slack app.", error)
     },
   })
@@ -262,14 +279,7 @@ export function ManagedSlackWizard({
       void invalidate()
     },
     onError: (error) => {
-      if (connectionChanged(error)) return
-      if (
-        error instanceof ApiError &&
-        error.type === 'slack_manual_completion_blocked'
-      ) {
-        setBlocked(error.message)
-        return
-      }
+      if (refusal(error)) return
       notifyError('Slack rejected those values. Double-check them.', error)
     },
   })
@@ -283,8 +293,7 @@ export function ManagedSlackWizard({
   })
 
   const reset = () => {
-    setBlocked(undefined)
-    setChanged(undefined)
+    setNotice(undefined)
     setStep('create')
     setEditing(false)
     setManifest(undefined)
@@ -349,6 +358,27 @@ export function ManagedSlackWizard({
     }, 2_000)
     return () => window.clearInterval(interval)
   }, [eventVerified, open, queryClient, step, verificationFailed])
+
+  const noticeElement = notice ? (
+    <WizardNotice message={notice.message}>
+      {notice.pointToSetup ? (
+        setupOnPage ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={showAutomatedSetup}
+          >
+            Show the automated setup
+          </Button>
+        ) : connectionsHref ? (
+          <Button asChild variant="outline" size="sm">
+            <Link to={connectionsHref}>Open Connections</Link>
+          </Button>
+        ) : null
+      ) : null}
+    </WizardNotice>
+  ) : null
 
   return (
     <>
@@ -510,7 +540,7 @@ export function ManagedSlackWizard({
                   </pre>
                 </>
               )}
-              {changed ? <WizardNotice message={changed} /> : null}
+              {noticeElement}
               <DialogFooter>
                 <Button variant="ghost" onClick={() => setOpen(false)}>
                   Cancel
@@ -588,25 +618,7 @@ export function ManagedSlackWizard({
                   placeholder="xoxb-…"
                 />
               </Field>
-              {changed ? <WizardNotice message={changed} /> : null}
-              {blocked ? (
-                <WizardNotice message={blocked}>
-                  {setupOnPage ? (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={showAutomatedSetup}
-                    >
-                      Show the automated setup
-                    </Button>
-                  ) : connectionsHref ? (
-                    <Button asChild variant="outline" size="sm">
-                      <Link to={connectionsHref}>Open Connections</Link>
-                    </Button>
-                  ) : null}
-                </WizardNotice>
-              ) : null}
+              {noticeElement}
               <DialogFooter>
                 <Button
                   type="button"
