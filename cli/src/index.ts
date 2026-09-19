@@ -79,8 +79,13 @@ Usage:
   opencomputer connection list
   opencomputer connection remove <alias|connection-id> [--service <name>]
   opencomputer model-access connect codex [--project <id|slug>]
+  opencomputer model-access connect openrouter [--api-key-stdin] [--project <id|slug>]
+  opencomputer model-access connect openai-compatible --base-url <url> [--api-key-stdin] [--project <id|slug>]
   opencomputer model-access list
   opencomputer model-access disconnect codex
+  opencomputer model-route set --project <id|slug> --connection <id> --model <model> [--agent <agent>] [--fallback fail|managed]
+  opencomputer model-route list --project <id|slug>
+  opencomputer model-route delete --project <id|slug> [--agent <agent>]
   opencomputer webhooks list [--environment development|production] [--agent <agent>|current]
   opencomputer webhooks create <name> [--environment development|production] [--agent <agent>|current]
   opencomputer webhooks enable <webhook-id> [--project <id|slug>]

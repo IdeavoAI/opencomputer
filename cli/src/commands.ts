@@ -155,9 +155,20 @@ function printDatabaseResult(result: {
   if (result.truncated) process.stdout.write("Result truncated; add LIMIT and paginate the query.\n");
 }
 
-function consumeModelAccessProvider(args: string[]): "claude" | "codex" {
-  if (args[0] === "claude" || args[0] === "codex") {
-    return args.shift() as "claude" | "codex";
+function consumeModelAccessProvider(
+  args: string[],
+): "claude" | "codex" | "openrouter" | "openai-compatible" {
+  if (
+    args[0] === "claude" ||
+    args[0] === "codex" ||
+    args[0] === "openrouter" ||
+    args[0] === "openai-compatible"
+  ) {
+    return args.shift() as
+      | "claude"
+      | "codex"
+      | "openrouter"
+      | "openai-compatible";
   }
   return "codex";
 }
@@ -1562,10 +1573,39 @@ function serviceOfConnection(connection: {
       // credential to OpenComputer as a connected account. Nothing secret
       // is echoed or persisted locally.
       const provider = consumeModelAccessProvider(args);
-      if (provider !== "codex") {
+      if (provider === "claude") {
         throw new Error(
           "Claude account BYOK is not supported. Connect a Codex account instead.",
         );
+      }
+      if (provider === "openrouter" || provider === "openai-compatible") {
+        const projectReference = option(args, "--project");
+        const baseUrl = option(args, "--base-url");
+        const label = option(args, "--label");
+        const apiKeyStdin = flag(args, "--api-key-stdin");
+        if (provider === "openai-compatible" && !baseUrl) {
+          throw new Error("--base-url is required for openai-compatible");
+        }
+        if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+        const apiKey = apiKeyStdin
+          ? await readStdinValue(true)
+          : await readTemplateSecretValue();
+        const connection = await client.connectModelAccessApiKey({
+          provider: provider === "openrouter" ? "openrouter" : "openai_compatible",
+          api_key: apiKey,
+          ...(baseUrl ? { base_url: baseUrl } : {}),
+          ...(label ? { label } : {}),
+        });
+        if (globals.json) printJSON(connection);
+        else {
+          process.stdout.write(`Connected ${connection.label}; status ${connection.status}.\n`);
+          if (projectReference) {
+            process.stdout.write(
+              `Next: opencomputer model-route set --project ${projectReference} --connection ${connection.id} --model <model>\n`,
+            );
+          }
+        }
+        return;
       }
       const projectReference = option(args, "--project");
       const legacyEnvironment = option(args, "--environment");
@@ -1647,7 +1687,14 @@ function serviceOfConnection(connection: {
       const provider = consumeModelAccessProvider(args);
       if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
       const connections = await client.modelAccessConnections();
-      const apiProvider = provider === "claude" ? "anthropic" : "openai";
+      const apiProvider =
+        provider === "claude"
+          ? "anthropic"
+          : provider === "openrouter"
+            ? "openrouter"
+            : provider === "openai-compatible"
+              ? "openai_compatible"
+              : "openai";
       const connection = connections.find((c) => c.provider === apiProvider);
       if (!connection) throw new Error(`No ${provider} connection found.`);
       const updated = await client.disconnectModelAccess(connection.id);
@@ -1655,7 +1702,69 @@ function serviceOfConnection(connection: {
       else process.stdout.write(`Disconnected ${connection.label}.\n`);
       return;
     }
-    throw new Error("Use `opencomputer model-access connect|list|disconnect`.");
+    throw new Error(
+      "Use `opencomputer model-access connect|list|disconnect` with codex, openrouter, or openai-compatible.",
+    );
+  }
+
+  if (command === "model-route") {
+    const action = args.shift();
+    const projectReference = option(args, "--project");
+    const project = await selectedProject(client, config, projectReference);
+    if (action === "list" || action === "ls" || action === undefined) {
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      const routes = await client.modelRoutes(project.projectId);
+      if (globals.json) printJSON(routes);
+      else if (!routes.length) process.stdout.write("No model routes.\n");
+      else for (const route of routes) {
+        process.stdout.write(
+          `${route.environment.padEnd(11)} ${(route.agentId ?? "project").padEnd(20)} ${route.model} via ${route.connectionId} (${route.fallback}) r${route.revision}\n`,
+        );
+      }
+      return;
+    }
+    const agentId = option(args, "--agent");
+    if (action === "set") {
+      const connectionId = option(args, "--connection");
+      const model = option(args, "--model");
+      const fallback = option(args, "--fallback") ?? "fail";
+      if (!connectionId || !model) throw new Error("--connection and --model are required");
+      if (fallback !== "fail" && fallback !== "managed") {
+        throw new Error("--fallback must be fail or managed");
+      }
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      const routes = await Promise.all(
+        (["development", "production"] as const).map((environment) =>
+          client.putModelRoute({
+            projectId: project.projectId,
+            environment,
+            connectionId,
+            model,
+            ...(agentId ? { agentId } : {}),
+            fallback,
+          }),
+        ),
+      );
+      if (globals.json) printJSON(routes);
+      else process.stdout.write(`Set ${agentId ? `agent ${agentId}` : "project"} route for development and production.\n`);
+      return;
+    }
+    if (action === "delete" || action === "remove") {
+      if (args.length) throw new Error(`Unexpected argument: ${args[0]}`);
+      await Promise.all(
+        (["development", "production"] as const).map((environment) =>
+          client.deleteModelRoute({
+            projectId: project.projectId,
+            environment,
+            ...(agentId ? { agentId } : {}),
+          }),
+        ),
+      );
+      if (globals.json) printJSON({ deleted: true });
+      else process.stdout.write("Removed model route from development and production.\n");
+      return;
+    }
+    throw new Error("Use `opencomputer model-route set|list|delete`.");
   }
 
   if (command === "env") {

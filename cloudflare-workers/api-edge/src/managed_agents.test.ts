@@ -357,9 +357,26 @@ describe("managed agents proxy", () => {
     );
   });
 
-  it("rejects unsupported Claude account connection", async () => {
-    const fetchSpy = vi.fn();
-    vi.stubGlobal("fetch", fetchSpy);
+  it("accepts a Claude setup token and strips it from the response", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input, init) => {
+        expect(await new Response(init?.body).json()).toMatchObject({
+          provider: "anthropic",
+          token: "sk-ant-oat01-write-only-setup-token-value",
+        });
+        return Response.json({
+          id: "mac_claude",
+          organizationId: "org_test",
+          connectedByUserId: "user_test",
+          provider: "anthropic",
+          kind: "claude_subscription",
+          label: "Claude account",
+          status: "connected",
+          credentialCiphertext: "must-not-leak",
+        });
+      }),
+    );
 
     const response = await proxyManagedAgents(
       new Request(
@@ -369,27 +386,156 @@ describe("managed agents proxy", () => {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             provider: "anthropic",
-            token: "must-not-be-returned",
+            token: "sk-ant-oat01-write-only-setup-token-value",
           }),
         },
       ),
       {
         OC_MANAGED_AGENTS_SECRET: "test-secret",
         MANAGED_AGENTS_API_URL: "https://managedagents.test",
+        ...legacyPlanEnv("pro"),
       },
       { orgID: "org_test", userID: "user_test", role: "admin" },
       "/api/managed-agents",
     );
 
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(200);
     const body = await response.json<Record<string, unknown>>();
     expect(body).toMatchObject({
-      error: {
-        code: "unsupported_provider",
-        message: "Codex is the only supported BYOK account provider.",
-      },
+      id: "mac_claude",
+      provider: "anthropic",
+      kind: "claude_subscription",
+      status: "connected",
     });
-    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(JSON.stringify(body)).not.toMatch(/credentialCiphertext|setup-token/);
+  });
+
+  it("accepts an OpenAI-compatible connection and strips custody fields", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input, init) => {
+        expect(await new Response(init?.body).json()).toMatchObject({
+          provider: "openai_compatible",
+          api_key: "write-only-key",
+          base_url: "https://api.scx.ai/v1",
+        });
+        return Response.json({
+          id: "mac_scx",
+          organizationId: "org_test",
+          connectedByUserId: "user_test",
+          provider: "openai_compatible",
+          kind: "openai_compatible_api",
+          label: "SCX",
+          baseUrl: "https://api.scx.ai/v1",
+          status: "connected",
+          credentialCiphertext: "must-not-leak",
+        });
+      }),
+    );
+    const response = await proxyManagedAgents(
+      new Request("https://mo-oc-dev.com/api/managed-agents/model-access/connections", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          provider: "openai_compatible",
+          api_key: "write-only-key",
+          base_url: "https://api.scx.ai/v1",
+        }),
+      }),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+        ...legacyPlanEnv("pro"),
+      },
+      { orgID: "org_test", userID: "user_test", role: "admin" },
+      "/api/managed-agents",
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json<Record<string, unknown>>();
+    expect(body).toMatchObject({
+      id: "mac_scx",
+      provider: "openai_compatible",
+      kind: "openai_compatible_api",
+      baseUrl: "https://api.scx.ai/v1",
+    });
+    expect(JSON.stringify(body)).not.toMatch(/write-only-key|credentialCiphertext|must-not-leak/);
+  });
+
+  it("proxies project model routes without exposing private audit metadata", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          id: "mr_test",
+          organizationId: "org_test",
+          projectId: "prj_test",
+          environment: "development",
+          connectionId: "mac_scx",
+          model: "GLM-5.3",
+          fallback: "fail",
+          revision: 2,
+          updatedByUserId: "user_test",
+        }),
+      ),
+    );
+    const response = await proxyManagedAgents(
+      new Request("https://mo-oc-dev.com/api/managed-agents/projects/prj_test/model-routes/development", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          connection_id: "mac_scx",
+          model: "GLM-5.3",
+          fallback: "fail",
+        }),
+      }),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+        ...legacyPlanEnv("pro"),
+      },
+      { orgID: "org_test", userID: "user_test", role: "admin" },
+      "/api/managed-agents",
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json<Record<string, unknown>>();
+    expect(body).toMatchObject({
+      id: "mr_test",
+      projectId: "prj_test",
+      model: "GLM-5.3",
+      revision: 2,
+    });
+    expect(body).not.toHaveProperty("organizationId");
+    expect(body).not.toHaveProperty("updatedByUserId");
+  });
+
+  it("removes a project model route without deleting its connection", async () => {
+    const fetchSpy = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(init?.method).toBe("DELETE");
+      expect(await new Response(init?.body).text()).toBe("{}");
+      return new Response(null, { status: 204 });
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await proxyManagedAgents(
+      new Request("https://mo-oc-dev.com/api/managed-agents/projects/prj_test/model-routes/development", {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      }),
+      {
+        OC_MANAGED_AGENTS_SECRET: "test-secret",
+        MANAGED_AGENTS_API_URL: "https://managedagents.test",
+        ...legacyPlanEnv("pro"),
+      },
+      { orgID: "org_test", userID: "user_test", role: "admin" },
+      "/api/managed-agents",
+    );
+
+    expect(response.status).toBe(204);
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    expect(String(fetchSpy.mock.calls[0]?.[0])).toBe(
+      "https://managedagents.test/v1/projects/prj_test/model-routes/development",
+    );
   });
 
   it("rejects BYOK connection and enablement on the base plan", async () => {
