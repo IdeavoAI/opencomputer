@@ -4,7 +4,8 @@ import { apiFetch, apiFetchResponse, validate } from '@/api/client'
 const agentSchema = z.object({
   id: z.string(),
   name: z.string(),
-  activeAlias: z.string(),
+  // Both are null until the agent has been deployed at least once.
+  activeAlias: z.string().nullish(),
   activeDeploymentId: z.string().nullish(),
   deploymentCount: z.number(),
   createdAt: z.string(),
@@ -120,6 +121,7 @@ const projectSchema = z.object({
     }),
   ),
   agents: z.array(z.object({ id: z.string(), name: z.string() })),
+  archivedAt: z.string().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 })
@@ -863,10 +865,10 @@ export async function getManagedRuntimeProfile() {
   )
 }
 
-export async function getManagedProjects() {
+export async function getManagedProjects(options: { archived?: boolean } = {}) {
   return (
     await apiFetch(
-      '/managed-agents/projects',
+      `/managed-agents/projects${options.archived ? '?archived=true' : ''}`,
       undefined,
       projectsResponseSchema,
     )
@@ -877,6 +879,22 @@ export async function createManagedProject(name: string) {
   return apiFetch(
     '/managed-agents/projects',
     { method: 'POST', body: JSON.stringify({ name }) },
+    projectSchema,
+  )
+}
+
+export async function archiveManagedProject(projectId: string) {
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(projectId)}/archive`,
+    { method: 'POST' },
+    projectSchema,
+  )
+}
+
+export async function restoreManagedProject(projectId: string) {
+  return apiFetch(
+    `/managed-agents/projects/${encodeURIComponent(projectId)}/restore`,
+    { method: 'POST' },
     projectSchema,
   )
 }

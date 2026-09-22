@@ -76,11 +76,14 @@ test("init creates a multi-agent-ready hello-world agent by default", async () =
     await assert.rejects(stat(resolve(root, "opencomputer", "package.json")));
     const agentRoot = resolve(root, "opencomputer", "agents", "hello-world");
     assert.match(
+      await readFile(resolve(agentRoot, "opencomputer.toml"), "utf8"),
+      /id = "hello-world"[\s\S]*name = "Hello World"/,
+    );
+    assert.match(
       await readFile(resolve(agentRoot, "agent.ts"), "utf8"),
       /useInput[\s\S]*useModel\("anthropic\/claude-sonnet-4\.6"\)/,
     );
     for (const removed of [
-      "opencomputer.toml",
       "opencomputer.config.ts",
       "opencomputer.ts",
       "opencode.json",
@@ -96,6 +99,7 @@ test("init creates a multi-agent-ready hello-world agent by default", async () =
     assert.deepEqual(initialized.files, [
       "opencomputer/project.ts",
       "opencomputer/.env.example",
+      "opencomputer/agents/hello-world/opencomputer.toml",
       "opencomputer/agents/hello-world/agent.ts",
       "package.json",
       "README.md",
@@ -285,6 +289,7 @@ test("init can explicitly include a separately-run React app", async () => {
     assert.deepEqual(initialized.files, [
       "opencomputer/project.ts",
       "opencomputer/.env.example",
+      "opencomputer/agents/hello-world/opencomputer.toml",
       "opencomputer/agents/hello-world/agent.ts",
       "package.json",
       "vite.config.ts",
@@ -306,6 +311,7 @@ test("the code-first compiler records hook resources without config files", asyn
   const root = resolve(parent, "app");
   try {
     const initialized = await initializeAgentProject(root);
+    await rm(resolve(initialized.agentRoot, "opencomputer.toml"));
     await writeFile(
       resolve(initialized.agentRoot, "agent.ts"),
       `import {

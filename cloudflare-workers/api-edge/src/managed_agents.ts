@@ -231,7 +231,9 @@ async function publicErrorResponse(upstream: Response): Promise<Response> {
   } else if (upstream.status === 404) {
     message = "The requested agent resource was not found.";
   } else if (upstream.status === 409) {
-    if (backendCode === "invalid_model_selection") {
+    if (backendCode === "project_archived") {
+      message = "Restore this project before starting new work.";
+    } else if (backendCode === "invalid_model_selection") {
       message =
         backendMessage || "The deployment selects an unavailable model.";
     } else if (backendCode === "database_not_provisioned") {
@@ -475,6 +477,21 @@ function publicDeployment(value: unknown): Record<string, unknown> {
   };
 }
 
+function publicAgent(value: unknown): Record<string, unknown> {
+  const agent = record(value) ?? {};
+  return {
+    id: agent.id,
+    // An agent that was never named falls back to its id, so the dashboard
+    // always has something to render.
+    name: typeof agent.name === "string" && agent.name ? agent.name : agent.id,
+    activeAlias: agent.activeAlias,
+    activeDeploymentId: agent.activeDeploymentId,
+    deploymentCount: agent.deploymentCount,
+    createdAt: agent.createdAt,
+    updatedAt: agent.updatedAt,
+  };
+}
+
 function publicProject(value: unknown): Record<string, unknown> {
   const project = record(value) ?? {};
   const agentId =
@@ -510,6 +527,9 @@ function publicProject(value: unknown): Record<string, unknown> {
       ? stripPrivateValues(project.environments)
       : [],
     agents,
+    ...(typeof project.archivedAt === "string"
+      ? { archivedAt: project.archivedAt }
+      : {}),
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
   };
@@ -1440,23 +1460,7 @@ function publicSuccessBody(
   }
   if (method === "GET" && suffix === "/agents") {
     return {
-      agents: Array.isArray(body.agents)
-        ? body.agents.map((value) => {
-            const agent = record(value) ?? {};
-            return {
-              id: agent.id,
-              name:
-                typeof agent.name === "string" && agent.name
-                  ? agent.name
-                  : agent.id,
-              activeAlias: agent.activeAlias,
-              activeDeploymentId: agent.activeDeploymentId,
-              deploymentCount: agent.deploymentCount,
-              createdAt: agent.createdAt,
-              updatedAt: agent.updatedAt,
-            };
-          })
-        : [],
+      agents: Array.isArray(body.agents) ? body.agents.map(publicAgent) : [],
     };
   }
   if (method === "GET" && suffix === "/projects") {
@@ -1467,6 +1471,12 @@ function publicSuccessBody(
     };
   }
   if (method === "POST" && suffix === "/projects") {
+    return publicProject(body);
+  }
+  if (
+    method === "POST" &&
+    /^\/projects\/[^/]+\/(archive|restore)$/.test(suffix)
+  ) {
     return publicProject(body);
   }
   if (
@@ -2077,6 +2087,12 @@ function isAllowedManagedAgentsRoute(method: string, suffix: string): boolean {
   if (method === "GET" && suffix === "/github") return true;
   if (method === "POST" && suffix === "/github/connect") return true;
   if (method === "GET" && /^\/projects\/[^/]+$/.test(suffix)) return true;
+  if (
+    method === "POST" &&
+    /^\/projects\/[^/]+\/(archive|restore)$/.test(suffix)
+  ) {
+    return true;
+  }
   if (
     method === "POST" &&
     /^\/projects\/[^/]+\/database\/query$/.test(suffix)
